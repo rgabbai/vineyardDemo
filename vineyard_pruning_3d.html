@@ -57,8 +57,8 @@
   </div>
   <button id="themeToggle">Toggle Theme</button>
   <div id="layoutControls">
-    <label>Rows <input type="number" id="rows" value="2" min="1" max="10"></label>
-    <label>Vines/Row <input type="number" id="vinesPerRow" value="4" min="1" max="12"></label>
+    <label>Rows <input type="number" id="rows" value="1" min="1" max="10"></label>
+    <label>Vines/Row <input type="number" id="vinesPerRow" value="1" min="1" max="12"></label>
     <button id="applyLayout">Apply Layout</button>
   </div>
   <div>
@@ -92,8 +92,8 @@ import * as THREE from 'https://unpkg.com/three@0.161.0/build/three.module.js';
 
 // === Config ===
 const state = {
-  rows: 2,
-  vinesPerRow: 4,
+  rows: 1,
+  vinesPerRow: 1,
   vines: [], // array of vine groups
   selected: {row:0, vine:0},
   pendingCuts: [], // {cane, t, pos, marker}
@@ -165,6 +165,11 @@ function setViewMode(mode){
   state.vineColor = mode==='real'?0x9e7b60:0x6d4c41;
   updateVineColors();
   robot.visible = false;
+  if(mode==='real'){
+    clearPending();
+    buildVineyard();
+    centerSelected();
+  }
 }
 
 function updateVineColors(){
@@ -558,8 +563,6 @@ document.querySelectorAll('input[name=viewMode]').forEach(r=>r.addEventListener(
 
 // Initial
 setViewMode('real');
-buildVineyard();
-centerSelected();
 updatePending();
 
 // render loop
