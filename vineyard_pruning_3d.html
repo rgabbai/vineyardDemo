@@ -170,25 +170,107 @@ const wheelMat=new THREE.MeshStandardMaterial({color:0x222222});
   robot.add(w);
 });
 
-// robotic arm
+// robotic arm (6 DOF with cutter end‑effector)
 const arm=new THREE.Group();
 const armBaseHeight=0.35;
 arm.position.set(0,armBaseHeight,0);
-const link=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,1,12),
-  new THREE.MeshStandardMaterial({color:0x777777}));
-link.geometry.translate(0,0.5,0);
-const blade=new THREE.Mesh(new THREE.BoxGeometry(0.1,0.02,0.3),
-  new THREE.MeshStandardMaterial({color:0xcc0000}));
-blade.position.y=1;
-arm.add(link);
-arm.add(blade);
+
+// link lengths
+const L1=0.4, L2=0.4, L3=0.25;
+
+// base yaw
+const baseJoint=new THREE.Group();
+arm.add(baseJoint);
+
+// shoulder pitch
+const shoulder=new THREE.Group();
+baseJoint.add(shoulder);
+const upper=new THREE.Mesh(
+  new THREE.CylinderGeometry(0.05,0.05,L1,12),
+  new THREE.MeshStandardMaterial({color:0x777777})
+);
+upper.geometry.translate(0,L1/2,0);
+shoulder.add(upper);
+
+// elbow pitch
+const elbow=new THREE.Group();
+elbow.position.y=L1;
+shoulder.add(elbow);
+const forearm=new THREE.Mesh(
+  new THREE.CylinderGeometry(0.04,0.04,L2,12),
+  new THREE.MeshStandardMaterial({color:0x777777})
+);
+forearm.geometry.translate(0,L2/2,0);
+elbow.add(forearm);
+
+// wrist yaw + pitch
+const wristYaw=new THREE.Group();
+wristYaw.position.y=L2;
+elbow.add(wristYaw);
+const wristPitch=new THREE.Group();
+wristYaw.add(wristPitch);
+const wrist=new THREE.Mesh(
+  new THREE.CylinderGeometry(0.03,0.03,L3,12),
+  new THREE.MeshStandardMaterial({color:0x777777})
+);
+wrist.geometry.translate(0,L3/2,0);
+wristPitch.add(wrist);
+
+// cutter end‑effector
+const cutterJoint=new THREE.Group();
+cutterJoint.position.y=L3;
+wristPitch.add(cutterJoint);
+const blade=new THREE.Mesh(
+  new THREE.BoxGeometry(0.1,0.02,0.3),
+  new THREE.MeshStandardMaterial({color:0xcc0000})
+);
+blade.rotation.z=Math.PI/2;
+cutterJoint.add(blade);
 robot.add(arm);
 
 // arm initial state
-const armRest=0.1;
-let armLength=armRest;
-link.scale.y=armLength;
-blade.position.y=armLength;
+const armAngles={base:0,shoulder:0,elbow:0,wrist:0};
+const restAngles={base:0,shoulder:0,elbow:0,wrist:0};
+function applyAngles(){
+  baseJoint.rotation.y=armAngles.base;
+  shoulder.rotation.z=armAngles.shoulder;
+  elbow.rotation.z=armAngles.elbow;
+  wristPitch.rotation.z=armAngles.wrist;
+}
+applyAngles();
+
+const armMoveSpeed=2;
+
+function solveIK(p){
+  const x=p.x, y=p.y-armBaseHeight, z=p.z;
+  const base=Math.atan2(x,z);
+  const cos=Math.cos(-base), sin=Math.sin(-base);
+  const px=x*cos - z*sin;
+  const py=y;
+  const dist=Math.sqrt(px*px+py*py);
+  const reach=Math.max(0,dist-L3);
+  const c=Math.max(-1,Math.min(1,(reach*reach - L1*L1 - L2*L2)/(2*L1*L2)));
+  const elbowAng=Math.acos(c);
+  const shoulderAng=Math.atan2(py,px) - Math.atan2(L2*Math.sin(elbowAng), L1+L2*Math.cos(elbowAng));
+  const wristAng=Math.atan2(py,px) - shoulderAng - elbowAng;
+  return {base:base, shoulder:shoulderAng, elbow:elbowAng, wrist:wristAng};
+}
+
+function moveAnglesTowards(target, dt){
+  for(const k in armAngles){
+    const diff=target[k]-armAngles[k];
+    if(Math.abs(diff)>1e-3){
+      const step=Math.sign(diff)*armMoveSpeed*dt;
+      if(Math.abs(step)>Math.abs(diff)) armAngles[k]=target[k];
+      else armAngles[k]+=step;
+    }
+  }
+  applyAngles();
+}
+
+function anglesClose(a,b){
+  return Object.keys(a).every(k=>Math.abs(a[k]-b[k])<0.01);
+}
 
 robot.visible=false;
 scene.add(robot);
@@ -566,12 +648,9 @@ function executeCuts(onComplete){
   robot.visible=true;
   let i=0; let phase='move'; let cut; let lastTime=null;
   const speed=4; // rover speed
-  const armSpeed=2;
-  armLength=armRest;
-  link.scale.y=armLength;
-  blade.position.y=armLength;
+  Object.assign(armAngles,restAngles); applyAngles();
   robot.position.set(state.pendingCuts[0].pos.x,0,state.pendingCuts[0].pos.z);
-  let armTargetLen=0; const armBase=new THREE.Vector3(0,armBaseHeight,0); let armTarget=new THREE.Vector3();
+  let targetAngles=Object.assign({},restAngles);
   function step(time){
     if(!lastTime) lastTime=time; const dt=(time-lastTime)/1000; lastTime=time;
     if(i>=state.pendingCuts.length){
@@ -589,18 +668,14 @@ function executeCuts(onComplete){
       const dist=dir.length();
       if(dist<0.05){
         const local=robot.worldToLocal(cut.pos.clone());
-        armTarget.copy(local).sub(armBase);
-        arm.lookAt(local);
-        armTargetLen=armTarget.length();
+        targetAngles=solveIK(local);
         phase='extend';
       }else{
         robot.position.add(dir.normalize().multiplyScalar(speed*dt));
       }
     }else if(phase==='extend'){
-      armLength=Math.min(armTargetLen,armLength+armSpeed*dt);
-      link.scale.y=armLength;
-      blade.position.y=armLength;
-      if(armLength>=armTargetLen){phase='cut';}
+      moveAnglesTowards(targetAngles,dt);
+      if(anglesClose(armAngles,targetAngles)) phase='cut';
     }else if(phase==='cut'){
       applyCut(cut);
       saveCut(cut);
@@ -608,10 +683,8 @@ function executeCuts(onComplete){
       state.cutLog.push({row:idx.row, vine:idx.vine, x:cut.pos.x, y:cut.pos.y, z:cut.pos.z});
       phase='retract';
     }else if(phase==='retract'){
-      armLength=Math.max(armRest,armLength-armSpeed*dt);
-      link.scale.y=armLength;
-      blade.position.y=armLength;
-      if(armLength<=armRest){i++; phase='move';}
+      moveAnglesTowards(restAngles,dt);
+      if(anglesClose(armAngles,restAngles)){i++; phase='move';}
     }
     renderer.render(scene,camera);
   }
