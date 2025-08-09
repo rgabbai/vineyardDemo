@@ -514,14 +514,16 @@ async function recordCuts(){
       const writable=await state.cutPlaybackHandle.createWritable();
       await writable.write('');
       await writable.close();
-      document.getElementById('loadStatus').textContent='Executed and cleared cuts';
     }catch(err){console.error(err);}
     state.cutPlaybackHandle=null;
   }
 
 // Execute cuts with robot
-function executeCuts(){
-  if(state.pendingCuts.length===0) return;
+function executeCuts(onComplete){
+  if(state.pendingCuts.length===0){
+    if(onComplete) onComplete();
+    return;
+  }
   robot.visible=true;
   let i=0; let phase='move'; let targetPos,cut; let lastTime=null;
   const speed=8; // units/sec
@@ -533,6 +535,7 @@ function executeCuts(){
       clearPending();
       renderer.setAnimationLoop(renderLoop);
       clearPlaybackFile();
+      if(onComplete) onComplete();
       return;
     }
     cut=state.pendingCuts[i];
@@ -666,8 +669,18 @@ document.getElementById('caneAngle').oninput=e=>{
   if(state.viewMode==='real'){buildVineyard();centerSelected();}
 };
 document.getElementById('recordCuts').onclick=recordCuts;
-document.getElementById('replayCuts').onclick=executeCuts;
 document.getElementById('loadCuts').onclick=loadCutFile;
+document.getElementById('replayCuts').onclick=async ()=>{
+  if(state.pendingCuts.length===0){
+    await loadCutFile();
+  }
+  const count=state.pendingCuts.length;
+  if(count===0) return;
+  const loadBtn=document.getElementById('loadCuts');
+  loadBtn.style.backgroundColor='yellow';
+  document.getElementById('loadStatus').textContent=`Loaded ${count} cuts`;
+  executeCuts(()=>{loadBtn.style.backgroundColor='';});
+};
 document.getElementById('undoCut').onclick=undoLast;
 document.getElementById('clearCuts').onclick=clearPending;
 document.getElementById('resetLearned').onclick=()=>{localStorage.removeItem('vine_pruning_cuts_3d_v2_curves_with_buds');state.storedCuts=[];document.getElementById('learningStats').textContent='Learning stats';updateRecommendations();};
