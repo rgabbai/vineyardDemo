@@ -103,7 +103,8 @@ const state = {
   viewMode: 'real',
   vineColor: 0xC9A885,
   cutLog: [],
-  cutFileHandle: null
+  cutFileHandle: null,
+  needsReapply: false
 };
 
 // === Scene Setup ===
@@ -178,10 +179,10 @@ function setViewMode(mode){
   robot.visible = false;
   hoverMarker.visible = false;
   clearPending();
-  buildVineyard();
   centerSelected();
-  if(mode==='digital'){
+  if(mode==='digital' && state.needsReapply){
     initCutFile().then(()=>{reapplyDigitalCuts();});
+    state.needsReapply=false;
   }
 }
 
@@ -208,6 +209,7 @@ function buildVineyard(){
       state.vines.push(vine);
     }
   }
+  state.needsReapply=true;
 }
 
 function buildVine(group,vine){
@@ -386,6 +388,7 @@ function parseCutFile(text){
 
 async function initCutFile(){
   if(state.cutFileHandle) return;
+  state.cutLog=[];
   const opts={
     suggestedName:'vineCut.txt',
     startIn:'downloads',
@@ -393,6 +396,9 @@ async function initCutFile(){
   };
   try{
     [state.cutFileHandle] = await window.showOpenFilePicker(opts);
+    const writable=await state.cutFileHandle.createWritable();
+    await writable.write('');
+    await writable.close();
   }catch(e){
     state.cutFileHandle = await window.showSaveFilePicker(opts);
     try{
@@ -401,12 +407,6 @@ async function initCutFile(){
       await writable.close();
     }catch(err){console.error(err);}
   }
-  try{
-    const file=await state.cutFileHandle.getFile();
-    const text=await file.text();
-    const existing=parseCutFile(text);
-    state.cutLog.push(...existing);
-  }catch(err){console.error(err);}
 }
 
 async function appendCutsToFile(records){
@@ -643,6 +643,7 @@ document.getElementById('resetLearned').onclick=()=>{localStorage.removeItem('vi
 document.querySelectorAll('input[name=viewMode]').forEach(r=>r.addEventListener('change',e=>setViewMode(e.target.value)));
 
 // Initial
+buildVineyard();
 setViewMode('real');
 updatePending();
 
