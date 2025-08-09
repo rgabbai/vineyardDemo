@@ -281,6 +281,7 @@ fileInput.accept='.txt,.json';
 fileInput.style.display='none';
 document.body.appendChild(fileInput);
 function onPointerMove(e){
+  if(state.viewMode!=='digital'){hoverMarker.visible=false;return;}
   const rect=renderer.domElement.getBoundingClientRect();
   pointer.x=((e.clientX-rect.left)/rect.width)*2-1;
   pointer.y=-((e.clientY-rect.top)/rect.height)*2+1;
@@ -330,7 +331,7 @@ function findNearestT(cane, point){
 
 renderer.domElement.addEventListener('pointermove',onPointerMove);
 renderer.domElement.addEventListener('click',()=>{
-  if(!hoverMarker.visible) return;
+  if(state.viewMode!=='digital' || !hoverMarker.visible) return;
   const {cane,t,pos}=hoverMarker.userData;
   const marker=new THREE.Mesh(new THREE.SphereGeometry(0.06,8,8), new THREE.MeshBasicMaterial({color:0xff0000}));
   marker.position.copy(pos);
@@ -362,6 +363,8 @@ function recordCuts(){
   state.pendingCuts.forEach(cut=>{
     const idx=findVineIndex(cut.cane);
     records.push({row:idx.row, vine:idx.vine, x:cut.pos.x, y:cut.pos.y, z:cut.pos.z});
+    applyCut(cut);
+    saveCut(cut);
     scene.remove(cut.marker);
   });
   state.pendingCuts=[];
