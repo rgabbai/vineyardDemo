@@ -74,6 +74,7 @@
     <label>Cane Angle <input type="range" id="caneAngle" min="0" max="90" value="45"></label>
     <button id="loadCuts">Load Cuts File</button>
     <button id="replayCuts">Replay Cuts</button>
+    <div id="loadStatus"></div>
   </div>
   <div id="digitalControls">
     <button id="recordCuts">Record Cuts (Enter)</button>
@@ -104,6 +105,7 @@ const state = {
   vineColor: 0xC9A885,
   cutLog: [],
   cutFileHandle: null,
+  cutPlaybackHandle: null,
   needsReapply: false,
   randomSeed: Math.floor(Math.random()*1e9)
 };
@@ -309,11 +311,6 @@ function buildVine(group,vine,rng){
 // === Interaction ===
 const raycaster=new THREE.Raycaster();
 const pointer=new THREE.Vector2();
-const fileInput=document.createElement('input');
-fileInput.type='file';
-fileInput.accept='.txt,.json';
-fileInput.style.display='none';
-document.body.appendChild(fileInput);
 function onPointerMove(e){
   if(state.viewMode!=='digital'){hoverMarker.visible=false;return;}
   const rect=renderer.domElement.getBoundingClientRect();
@@ -473,10 +470,10 @@ async function recordCuts(){
   await appendCutsToFile(records);
 }
 
-function loadCuts(data){
-  clearPending();
-  data.forEach(rec=>{
-    const vine=state.vines.find(v=>v.index.row===rec.row && v.index.vine===rec.vine);
+  function loadCuts(data){
+    clearPending();
+    data.forEach(rec=>{
+      const vine=state.vines.find(v=>v.index.row===rec.row && v.index.vine===rec.vine);
     if(!vine) return;
     let best={cane:null,t:0,dist:Infinity,pos:null};
     vine.canes.forEach(c=>{
@@ -494,8 +491,33 @@ function loadCuts(data){
       state.pendingCuts.push({cane:best.cane,t:best.t,pos:best.pos,marker});
     }
   });
-  updatePending();
-}
+    updatePending();
+  }
+
+  async function loadCutFile(){
+    try{
+      const [handle]=await window.showOpenFilePicker({
+        types:[{description:'Cut file', accept:{'text/plain':['.txt','.json']}}]
+      });
+      state.cutPlaybackHandle=handle;
+      const file=await handle.getFile();
+      const text=await file.text();
+      const data=parseCutFile(text);
+      loadCuts(data);
+      document.getElementById('loadStatus').textContent=`Loaded ${data.length} cuts`;
+    }catch(err){console.error(err);}
+  }
+
+  async function clearPlaybackFile(){
+    if(!state.cutPlaybackHandle) return;
+    try{
+      const writable=await state.cutPlaybackHandle.createWritable();
+      await writable.write('');
+      await writable.close();
+      document.getElementById('loadStatus').textContent='Executed and cleared cuts';
+    }catch(err){console.error(err);}
+    state.cutPlaybackHandle=null;
+  }
 
 // Execute cuts with robot
 function executeCuts(){
@@ -510,6 +532,7 @@ function executeCuts(){
       robot.visible=false;
       clearPending();
       renderer.setAnimationLoop(renderLoop);
+      clearPlaybackFile();
       return;
     }
     cut=state.pendingCuts[i];
@@ -644,14 +667,7 @@ document.getElementById('caneAngle').oninput=e=>{
 };
 document.getElementById('recordCuts').onclick=recordCuts;
 document.getElementById('replayCuts').onclick=executeCuts;
-document.getElementById('loadCuts').onclick=()=>fileInput.click();
-fileInput.onchange=e=>{
-  const file=e.target.files[0];
-  if(!file) return;
-  const reader=new FileReader();
-  reader.onload=()=>{try{loadCuts(parseCutFile(reader.result));}catch(err){console.error(err);}};
-  reader.readAsText(file);
-};
+document.getElementById('loadCuts').onclick=loadCutFile;
 document.getElementById('undoCut').onclick=undoLast;
 document.getElementById('clearCuts').onclick=clearPending;
 document.getElementById('resetLearned').onclick=()=>{localStorage.removeItem('vine_pruning_cuts_3d_v2_curves_with_buds');state.storedCuts=[];document.getElementById('learningStats').textContent='Learning stats';updateRecommendations();};
