@@ -664,6 +664,10 @@ document.getElementById('applyLayout').onclick=()=>{
   state.randomSeed=Math.floor(Math.random()*1e9);
   buildVineyard();
   centerSelected();
+  state.cutFileHandle=null;
+  state.cutPlaybackHandle=null;
+  state.cutLog=[];
+  clearPending();
 };
 document.getElementById('centerSelect').onclick=()=>{state.selected.row=+document.getElementById('selRow').value;state.selected.vine=+document.getElementById('selVine').value;centerSelected();};
 document.getElementById('zoom').oninput=e=>{radius=+e.target.value;updateCamera();};
