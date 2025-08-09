@@ -195,6 +195,7 @@ function setViewMode(mode){
   }
   if(mode==='digital'){
     initCutFile();
+    reapplyDigitalCuts();
   }
   centerSelected();
 }
@@ -223,7 +224,7 @@ function buildVineyard(){
       state.vines.push(vine);
     }
   }
-  if(state.cutLog.length>0){
+  if(state.cutLog.length>0 && state.viewMode==='digital'){
     reapplyDigitalCuts();
   }
 }
