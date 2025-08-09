@@ -386,16 +386,20 @@ function parseCutFile(text){
 
 async function initCutFile(){
   if(state.cutFileHandle) return;
+  const opts={
+    suggestedName:'vineCut.txt',
+    startIn:'downloads',
+    types:[{description:'Cut file', accept:{'text/plain':['.txt']}}]
+  };
   try{
-    [state.cutFileHandle] = await window.showOpenFilePicker({
-      multiple:false,
-      types:[{description:'Cut file', accept:{'text/plain':['.txt']}}]
-    });
+    [state.cutFileHandle] = await window.showOpenFilePicker(opts);
   }catch(e){
-    state.cutFileHandle = await window.showSaveFilePicker({
-      suggestedName:'vineCutsLoc.txt',
-      types:[{description:'Cut file', accept:{'text/plain':['.txt']}}]
-    });
+    state.cutFileHandle = await window.showSaveFilePicker(opts);
+    try{
+      const writable=await state.cutFileHandle.createWritable();
+      await writable.write('');
+      await writable.close();
+    }catch(err){console.error(err);}
   }
   try{
     const file=await state.cutFileHandle.getFile();
@@ -408,7 +412,9 @@ async function initCutFile(){
 async function appendCutsToFile(records){
   try{
     await initCutFile();
-    const text=records.map(r=>JSON.stringify(r)).join('\n')+'\n';
+    const timestamp=new Date().toISOString();
+    const header=`# ${timestamp}\n`;
+    const text=header+records.map(r=>JSON.stringify(r)).join('\n')+'\n';
     const file=await state.cutFileHandle.getFile();
     const writable=await state.cutFileHandle.createWritable({keepExistingData:true});
     await writable.seek(file.size);
@@ -606,10 +612,10 @@ document.getElementById('themeToggle').onclick=()=>{
   const b=document.body;b.dataset.theme=b.dataset.theme==='dark'?'light':'dark';themeUpdate();renderer.render(scene,camera);
 };
 document.getElementById('applyLayout').onclick=()=>{
-  if(state.viewMode!=='real') return;
   state.rows=+document.getElementById('rows').value;
   state.vinesPerRow=+document.getElementById('vinesPerRow').value;
   buildVineyard();
+  centerSelected();
 };
 document.getElementById('centerSelect').onclick=()=>{state.selected.row=+document.getElementById('selRow').value;state.selected.vine=+document.getElementById('selVine').value;centerSelected();};
 document.getElementById('zoom').oninput=e=>{radius=+e.target.value;updateCamera();};
