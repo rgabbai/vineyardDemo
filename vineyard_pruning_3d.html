@@ -101,7 +101,7 @@ const state = {
   similarity: 0.5,
   caneAngle: 45,
   viewMode: 'real',
-  vineColor: 0x9e7b60,
+  vineColor: 0xC9A885,
   cutLog: []
 };
 
@@ -118,6 +118,15 @@ let theta=0.5, phi=1.0, radius=12, target=new THREE.Vector3();
 // Lights
 scene.add(new THREE.HemisphereLight(0xffffff,0x222222,0.9));
 scene.add(new THREE.DirectionalLight(0xffffff,0.6));
+
+// Ground for real vineyard view
+const ground=new THREE.Mesh(
+  new THREE.PlaneGeometry(200,200),
+  new THREE.MeshStandardMaterial({color:0xbfd8a5, roughness:1})
+);
+ground.rotation.x=-Math.PI/2;
+ground.visible=state.viewMode==='real';
+scene.add(ground);
 
 // Hover marker (scissors as simple red X)
 const hoverMarker = new THREE.Mesh(
@@ -162,12 +171,12 @@ function setViewMode(mode){
   document.getElementById('digitalControls').style.display = mode==='digital'? 'block':'none';
   document.getElementById('realControls').style.display = mode==='real'? 'block':'none';
   document.getElementById('layoutControls').style.display = mode==='real'? 'block':'none';
-  state.vineColor = mode==='real'?0x9e7b60:0x6d4c41;
+  state.vineColor = mode==='real'?0xC9A885:0x6d4c41;
   updateVineColors();
+  ground.visible = mode==='real';
   robot.visible = false;
   if(mode==='real'){
     clearPending();
-    buildVineyard();
     centerSelected();
   }
 }
@@ -411,6 +420,7 @@ function executeCuts(){
   robot.visible=true;
   let i=0; let phase='move'; let targetPos,cut; let lastTime=null;
   const speed=8; // units/sec
+  robot.position.copy(state.pendingCuts[0].pos);
   function step(time){
     if(!lastTime) lastTime=time; const dt=(time-lastTime)/1000; lastTime=time;
     if(i>=state.pendingCuts.length){
@@ -424,7 +434,9 @@ function executeCuts(){
       targetPos=cut.pos;
       const dir=targetPos.clone().sub(robot.position);
       const dist=dir.length();
-      if(dist<0.05){phase='cut';} else {robot.position.add(dir.normalize().multiplyScalar(speed*dt));}
+      if(dist<0.05){phase='cut';}
+      else if(dist>15){robot.position.copy(targetPos);phase='cut';}
+      else {robot.position.add(dir.normalize().multiplyScalar(speed*dt));}
     }else if(phase==='cut'){
       applyCut(cut);
       saveCut(cut);
@@ -562,6 +574,7 @@ document.getElementById('resetLearned').onclick=()=>{localStorage.removeItem('vi
 document.querySelectorAll('input[name=viewMode]').forEach(r=>r.addEventListener('change',e=>setViewMode(e.target.value)));
 
 // Initial
+buildVineyard();
 setViewMode('real');
 updatePending();
 
