@@ -104,8 +104,18 @@ const state = {
   vineColor: 0xC9A885,
   cutLog: [],
   cutFileHandle: null,
-  needsReapply: false
+  needsReapply: false,
+  randomSeed: Math.floor(Math.random()*1e9)
 };
+
+function mulberry32(a){
+  return function(){
+    a|=0; a=(a+0x6D2B79F5)|0;
+    let t=Math.imul(a^a>>>15,1|a);
+    t=t+Math.imul(t^t>>>7,61|t)^t;
+    return ((t^t>>>14)>>>0)/4294967296;
+  };
+}
 
 // === Scene Setup ===
 const renderer = new THREE.WebGLRenderer({antialias:true});
@@ -201,6 +211,7 @@ function clearVineyard(){
 
 function buildVineyard(){
   clearVineyard();
+  const rng=mulberry32(state.randomSeed);
   const rowSpacing=5, vineSpacing=4;
   for(let r=0;r<state.rows;r++){
     for(let i=0;i<state.vinesPerRow;i++){
@@ -208,19 +219,19 @@ function buildVineyard(){
       g.position.set(i*vineSpacing,0,r*rowSpacing);
       scene.add(g);
       const vine={group:g, canes:[], cordonCenter:new THREE.Vector3(), index:{row:r,vine:i}};
-      buildVine(g,vine);
+      buildVine(g,vine,rng);
       state.vines.push(vine);
     }
   }
   state.needsReapply=true;
 }
 
-function buildVine(group,vine){
+function buildVine(group,vine,rng){
   const barkMat=new THREE.MeshStandardMaterial({color:state.vineColor, roughness:0.9});
   vine.barkMat = barkMat;
   const metalMat=new THREE.MeshStandardMaterial({color:0x888888, metalness:0.8, roughness:0.3});
   const randomness=1-state.similarity;
-  const rand=s=> (Math.random()-0.5)*2*s*randomness;
+  const rand=s=> (rng()-0.5)*2*s*randomness;
   // trunk
   let y=0;
   for(let i=0;i<4;i++){
@@ -257,9 +268,9 @@ function buildVine(group,vine){
     const spur=new THREE.Mesh(spurGeo,barkMat);
     group.add(spur);
     // cane
-    const dir=Math.random()<0.5?-1:1;
+    const dir=rng()<0.5?-1:1;
     const base=spurCurve.getPoint(1);
-    const len=3+Math.random()*2*randomness;
+    const len=3+rng()*2*randomness;
     const angle=THREE.MathUtils.degToRad(state.caneAngle);
     const end=base.clone().add(new THREE.Vector3(Math.cos(angle)*dir*len, Math.sin(angle)*len, 0));
     const mid=base.clone().add(new THREE.Vector3(Math.cos(angle)*dir*len*0.5, Math.sin(angle)*len*0.5+0.3, rand(len*0.3)));
@@ -271,7 +282,7 @@ function buildVine(group,vine){
     group.add(cane);
     // buds
     const buds=[];
-    const budCount=4+Math.floor(Math.random()*5*randomness);
+    const budCount=4+Math.floor(rng()*5*randomness);
     for(let b=1;b<=budCount;b++){
       const tBud=b/(budCount+1);
       const budPos=caneCurve.getPoint(tBud);
@@ -617,6 +628,7 @@ document.getElementById('themeToggle').onclick=()=>{
 document.getElementById('applyLayout').onclick=()=>{
   state.rows=+document.getElementById('rows').value;
   state.vinesPerRow=+document.getElementById('vinesPerRow').value;
+  state.randomSeed=Math.floor(Math.random()*1e9);
   buildVineyard();
   centerSelected();
 };
