@@ -52,11 +52,11 @@
 <body data-theme="dark">
 <div id="controls">
   <div>
-    <label><input type="radio" name="viewMode" value="digital" checked> Vineyard Digital Twin</label>
-    <label><input type="radio" name="viewMode" value="real"> Real Vineyard</label>
+    <label><input type="radio" name="viewMode" value="real" checked> Real Vineyard</label>
+    <label><input type="radio" name="viewMode" value="digital"> Vineyard Digital Twin</label>
   </div>
   <button id="themeToggle">Toggle Theme</button>
-  <div>
+  <div id="layoutControls">
     <label>Rows <input type="number" id="rows" value="2" min="1" max="10"></label>
     <label>Vines/Row <input type="number" id="vinesPerRow" value="4" min="1" max="12"></label>
     <button id="applyLayout">Apply Layout</button>
@@ -100,8 +100,8 @@ const state = {
   storedCuts: JSON.parse(localStorage.getItem('vine_pruning_cuts_3d_v2_curves_with_buds')||'[]'),
   similarity: 0.5,
   caneAngle: 45,
-  viewMode: 'digital',
-  vineColor: 0x6d4c41,
+  viewMode: 'real',
+  vineColor: 0x9e7b60,
   cutLog: []
 };
 
@@ -161,9 +161,14 @@ function setViewMode(mode){
   state.viewMode = mode;
   document.getElementById('digitalControls').style.display = mode==='digital'? 'block':'none';
   document.getElementById('realControls').style.display = mode==='real'? 'block':'none';
+  document.getElementById('layoutControls').style.display = mode==='real'? 'block':'none';
   state.vineColor = mode==='real'?0x9e7b60:0x6d4c41;
-  buildVineyard();
+  updateVineColors();
   robot.visible = false;
+}
+
+function updateVineColors(){
+  state.vines.forEach(v=>{ if(v.barkMat) v.barkMat.color.set(state.vineColor); });
 }
 
 // === Vineyard Building ===
@@ -189,6 +194,7 @@ function buildVineyard(){
 
 function buildVine(group,vine){
   const barkMat=new THREE.MeshStandardMaterial({color:state.vineColor, roughness:0.9});
+  vine.barkMat = barkMat;
   const metalMat=new THREE.MeshStandardMaterial({color:0x888888, metalness:0.8, roughness:0.3});
   const randomness=1-state.similarity;
   const rand=s=> (Math.random()-0.5)*2*s*randomness;
@@ -517,11 +523,22 @@ function centerSelected(){
 document.getElementById('themeToggle').onclick=()=>{
   const b=document.body;b.dataset.theme=b.dataset.theme==='dark'?'light':'dark';themeUpdate();renderer.render(scene,camera);
 };
-document.getElementById('applyLayout').onclick=()=>{state.rows=+document.getElementById('rows').value;state.vinesPerRow=+document.getElementById('vinesPerRow').value;buildVineyard();};
+document.getElementById('applyLayout').onclick=()=>{
+  if(state.viewMode!=='real') return;
+  state.rows=+document.getElementById('rows').value;
+  state.vinesPerRow=+document.getElementById('vinesPerRow').value;
+  buildVineyard();
+};
 document.getElementById('centerSelect').onclick=()=>{state.selected.row=+document.getElementById('selRow').value;state.selected.vine=+document.getElementById('selVine').value;centerSelected();};
 document.getElementById('zoom').oninput=e=>{radius=+e.target.value;updateCamera();};
-document.getElementById('similarity').oninput=e=>{state.similarity=+e.target.value;buildVineyard();centerSelected();};
-document.getElementById('caneAngle').oninput=e=>{state.caneAngle=+e.target.value;buildVineyard();centerSelected();};
+document.getElementById('similarity').oninput=e=>{
+  state.similarity=+e.target.value;
+  if(state.viewMode==='real'){buildVineyard();centerSelected();}
+};
+document.getElementById('caneAngle').oninput=e=>{
+  state.caneAngle=+e.target.value;
+  if(state.viewMode==='real'){buildVineyard();centerSelected();}
+};
 document.getElementById('recordCuts').onclick=recordCuts;
 document.getElementById('replayCuts').onclick=executeCuts;
 document.getElementById('loadCuts').onclick=()=>fileInput.click();
@@ -538,7 +555,8 @@ document.getElementById('resetLearned').onclick=()=>{localStorage.removeItem('vi
 document.querySelectorAll('input[name=viewMode]').forEach(r=>r.addEventListener('change',e=>setViewMode(e.target.value)));
 
 // Initial
-setViewMode('digital');
+setViewMode('real');
+buildVineyard();
 centerSelected();
 updatePending();
 
