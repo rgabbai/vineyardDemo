@@ -179,6 +179,9 @@ function setViewMode(mode){
   robot.visible = false;
   hoverMarker.visible = false;
   clearPending();
+  if(mode==='real'){
+    buildVineyard();
+  }
   centerSelected();
   if(mode==='digital' && state.needsReapply){
     initCutFile().then(()=>{reapplyDigitalCuts();});
