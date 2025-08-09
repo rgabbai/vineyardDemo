@@ -106,7 +106,6 @@ const state = {
   cutLog: [],
   cutFileHandle: null,
   cutPlaybackHandle: null,
-  needsReapply: false,
   randomSeed: Math.floor(Math.random()*1e9)
 };
 
@@ -194,11 +193,10 @@ function setViewMode(mode){
   if(mode==='real'){
     buildVineyard();
   }
-  centerSelected();
-  if(mode==='digital' && state.needsReapply){
-    initCutFile().then(()=>{reapplyDigitalCuts();});
-    state.needsReapply=false;
+  if(mode==='digital'){
+    initCutFile();
   }
+  centerSelected();
 }
 
 function updateVineColors(){
@@ -225,7 +223,9 @@ function buildVineyard(){
       state.vines.push(vine);
     }
   }
-  state.needsReapply=true;
+  if(state.cutLog.length>0){
+    reapplyDigitalCuts();
+  }
 }
 
 function buildVine(group,vine,rng){
@@ -404,7 +404,6 @@ function parseCutFile(text){
 
 async function initCutFile(){
   if(state.cutFileHandle) return;
-  state.cutLog=[];
   const opts={
     suggestedName:'vineCut.txt',
     startIn:'downloads',
@@ -556,6 +555,8 @@ function executeCuts(onComplete){
     }else if(phase==='cut'){
       applyCut(cut);
       saveCut(cut);
+      const idx=findVineIndex(cut.cane);
+      state.cutLog.push({row:idx.row, vine:idx.vine, x:cut.pos.x, y:cut.pos.y, z:cut.pos.z});
       i++; phase='move';
     }
     renderer.render(scene,camera);
