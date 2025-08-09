@@ -102,7 +102,8 @@ const state = {
   caneAngle: 45,
   viewMode: 'real',
   vineColor: 0xC9A885,
-  cutLog: []
+  cutLog: [],
+  cutFileHandle: null
 };
 
 // === Scene Setup ===
@@ -175,9 +176,12 @@ function setViewMode(mode){
   updateVineColors();
   ground.visible = mode==='real';
   robot.visible = false;
-  if(mode==='real'){
-    clearPending();
-    centerSelected();
+  hoverMarker.visible = false;
+  clearPending();
+  buildVineyard();
+  centerSelected();
+  if(mode==='digital'){
+    initCutFile().then(()=>{reapplyDigitalCuts();});
   }
 }
 
@@ -371,23 +375,82 @@ function findVineIndex(cane){
   return {row:0,vine:0};
 }
 
-function recordCuts(){
+function parseCutFile(text){
+  try{
+    const arr=JSON.parse(text);
+    return Array.isArray(arr)?arr:[];
+  }catch(e){
+    return text.trim().split('\n').filter(l=>l).map(l=>JSON.parse(l));
+  }
+}
+
+async function initCutFile(){
+  if(state.cutFileHandle) return;
+  try{
+    [state.cutFileHandle] = await window.showOpenFilePicker({
+      multiple:false,
+      types:[{description:'Cut file', accept:{'text/plain':['.txt']}}]
+    });
+  }catch(e){
+    state.cutFileHandle = await window.showSaveFilePicker({
+      suggestedName:'vineCutsLoc.txt',
+      types:[{description:'Cut file', accept:{'text/plain':['.txt']}}]
+    });
+  }
+  try{
+    const file=await state.cutFileHandle.getFile();
+    const text=await file.text();
+    const existing=parseCutFile(text);
+    state.cutLog.push(...existing);
+  }catch(err){console.error(err);}
+}
+
+async function appendCutsToFile(records){
+  try{
+    await initCutFile();
+    const text=records.map(r=>JSON.stringify(r)).join('\n')+'\n';
+    const file=await state.cutFileHandle.getFile();
+    const writable=await state.cutFileHandle.createWritable({keepExistingData:true});
+    await writable.seek(file.size);
+    await writable.write(text);
+    await writable.close();
+  }catch(err){console.error('File access error',err);}
+}
+
+function reapplyDigitalCuts(){
+  state.cutLog.forEach(rec=>{
+    const vine=state.vines.find(v=>v.index.row===rec.row && v.index.vine===rec.vine);
+    if(!vine) return;
+    let best={cane:null,t:0,dist:Infinity};
+    vine.canes.forEach(c=>{
+      const localPoint=c.mesh.worldToLocal(new THREE.Vector3(rec.x,rec.y,rec.z));
+      const t=findNearestT(c,localPoint);
+      const posLocal=c.curve.getPoint(t);
+      const posWorld=c.mesh.localToWorld(posLocal.clone());
+      const d=posWorld.distanceToSquared(new THREE.Vector3(rec.x,rec.y,rec.z));
+      if(d<best.dist){best={cane:c,t,dist:d};}
+    });
+    if(best.cane){
+      applyCut({cane:best.cane,t:best.t,pos:new THREE.Vector3(rec.x,rec.y,rec.z)});
+    }
+  });
+}
+
+async function recordCuts(){
   if(state.pendingCuts.length===0) return;
   const records=[];
   state.pendingCuts.forEach(cut=>{
     const idx=findVineIndex(cut.cane);
-    records.push({row:idx.row, vine:idx.vine, x:cut.pos.x, y:cut.pos.y, z:cut.pos.z});
+    const rec={row:idx.row, vine:idx.vine, x:cut.pos.x, y:cut.pos.y, z:cut.pos.z};
+    records.push(rec);
     applyCut(cut);
     saveCut(cut);
     scene.remove(cut.marker);
   });
   state.pendingCuts=[];
   updatePending();
-  const blob=new Blob([JSON.stringify(records)],{type:'text/plain'});
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);
-  a.download='cuts.txt';
-  a.click();
+  state.cutLog.push(...records);
+  await appendCutsToFile(records);
 }
 
 function loadCuts(data){
@@ -565,7 +628,7 @@ fileInput.onchange=e=>{
   const file=e.target.files[0];
   if(!file) return;
   const reader=new FileReader();
-  reader.onload=()=>{try{loadCuts(JSON.parse(reader.result));}catch(err){console.error(err);}};
+  reader.onload=()=>{try{loadCuts(parseCutFile(reader.result));}catch(err){console.error(err);}};
   reader.readAsText(file);
 };
 document.getElementById('undoCut').onclick=undoLast;
@@ -574,7 +637,6 @@ document.getElementById('resetLearned').onclick=()=>{localStorage.removeItem('vi
 document.querySelectorAll('input[name=viewMode]').forEach(r=>r.addEventListener('change',e=>setViewMode(e.target.value)));
 
 // Initial
-buildVineyard();
 setViewMode('real');
 updatePending();
 
