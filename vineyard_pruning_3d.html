@@ -362,7 +362,6 @@ function recordCuts(){
   state.pendingCuts.forEach(cut=>{
     const idx=findVineIndex(cut.cane);
     records.push({row:idx.row, vine:idx.vine, x:cut.pos.x, y:cut.pos.y, z:cut.pos.z});
-    applyCut(cut);
     scene.remove(cut.marker);
   });
   state.pendingCuts=[];
