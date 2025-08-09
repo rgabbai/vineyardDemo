@@ -51,6 +51,10 @@
 </head>
 <body data-theme="dark">
 <div id="controls">
+  <div>
+    <label><input type="radio" name="viewMode" value="digital" checked> Vineyard Digital Twin</label>
+    <label><input type="radio" name="viewMode" value="real"> Real Vineyard</label>
+  </div>
   <button id="themeToggle">Toggle Theme</button>
   <div>
     <label>Rows <input type="number" id="rows" value="2" min="1" max="10"></label>
@@ -65,14 +69,18 @@
   <div>
     <label>Zoom <input type="range" id="zoom" min="3" max="25" value="12"></label>
   </div>
-  <div>
+  <div id="realControls" style="display:none">
     <label>Similarity <input type="range" id="similarity" min="0" max="1" step="0.1" value="0.5"></label>
     <label>Cane Angle <input type="range" id="caneAngle" min="0" max="90" value="45"></label>
+    <button id="loadCuts">Load Cuts File</button>
+    <button id="replayCuts">Replay Cuts</button>
   </div>
-  <div>
-    <button id="execCuts">Execute Cuts (Enter)</button>
+  <div id="digitalControls">
+    <button id="recordCuts">Record Cuts (Enter)</button>
     <button id="undoCut">Undo Last (Backspace)</button>
     <button id="clearCuts">Clear Pending (R)</button>
+  </div>
+  <div>
     <button id="resetLearned">Reset Learned Data</button>
   </div>
   <div>Pending: <span id="pendingBadge">0</span></div>
@@ -91,7 +99,10 @@ const state = {
   pendingCuts: [], // {cane, t, pos, marker}
   storedCuts: JSON.parse(localStorage.getItem('vine_pruning_cuts_3d_v2_curves_with_buds')||'[]'),
   similarity: 0.5,
-  caneAngle: 45
+  caneAngle: 45,
+  viewMode: 'digital',
+  vineColor: 0x6d4c41,
+  cutLog: []
 };
 
 // === Scene Setup ===
@@ -146,6 +157,15 @@ function themeUpdate(){
 
 themeUpdate();
 
+function setViewMode(mode){
+  state.viewMode = mode;
+  document.getElementById('digitalControls').style.display = mode==='digital'? 'block':'none';
+  document.getElementById('realControls').style.display = mode==='real'? 'block':'none';
+  state.vineColor = mode==='real'?0x9e7b60:0x6d4c41;
+  buildVineyard();
+  robot.visible = false;
+}
+
 // === Vineyard Building ===
 function clearVineyard(){
   state.vines.forEach(v=>scene.remove(v.group));
@@ -168,7 +188,7 @@ function buildVineyard(){
 }
 
 function buildVine(group,vine){
-  const barkMat=new THREE.MeshStandardMaterial({color:0x6d4c41, roughness:0.9});
+  const barkMat=new THREE.MeshStandardMaterial({color:state.vineColor, roughness:0.9});
   const metalMat=new THREE.MeshStandardMaterial({color:0x888888, metalness:0.8, roughness:0.3});
   const randomness=1-state.similarity;
   const rand=s=> (Math.random()-0.5)*2*s*randomness;
@@ -249,6 +269,11 @@ function buildVine(group,vine){
 // === Interaction ===
 const raycaster=new THREE.Raycaster();
 const pointer=new THREE.Vector2();
+const fileInput=document.createElement('input');
+fileInput.type='file';
+fileInput.accept='.txt,.json';
+fileInput.style.display='none';
+document.body.appendChild(fileInput);
 function onPointerMove(e){
   const rect=renderer.domElement.getBoundingClientRect();
   pointer.x=((e.clientX-rect.left)/rect.width)*2-1;
@@ -317,6 +342,55 @@ function undoLast(){
   if(cut){scene.remove(cut.marker);} updatePending();
 }
 function clearPending(){state.pendingCuts.forEach(c=>scene.remove(c.marker));state.pendingCuts=[];updatePending();}
+
+function findVineIndex(cane){
+  for(const v of state.vines){
+    if(v.canes.includes(cane)) return v.index;
+  }
+  return {row:0,vine:0};
+}
+
+function recordCuts(){
+  if(state.pendingCuts.length===0) return;
+  const records=[];
+  state.pendingCuts.forEach(cut=>{
+    const idx=findVineIndex(cut.cane);
+    records.push({row:idx.row, vine:idx.vine, x:cut.pos.x, y:cut.pos.y, z:cut.pos.z});
+    applyCut(cut);
+    scene.remove(cut.marker);
+  });
+  state.pendingCuts=[];
+  updatePending();
+  const blob=new Blob([JSON.stringify(records)],{type:'text/plain'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='cuts.txt';
+  a.click();
+}
+
+function loadCuts(data){
+  clearPending();
+  data.forEach(rec=>{
+    const vine=state.vines.find(v=>v.index.row===rec.row && v.index.vine===rec.vine);
+    if(!vine) return;
+    let best={cane:null,t:0,dist:Infinity,pos:null};
+    vine.canes.forEach(c=>{
+      const localPoint=c.mesh.worldToLocal(new THREE.Vector3(rec.x,rec.y,rec.z));
+      const t=findNearestT(c,localPoint);
+      const posLocal=c.curve.getPoint(t);
+      const posWorld=c.mesh.localToWorld(posLocal.clone());
+      const d=posWorld.distanceToSquared(new THREE.Vector3(rec.x,rec.y,rec.z));
+      if(d<best.dist){best={cane:c,t,pos:posWorld,dist:d};}
+    });
+    if(best.cane){
+      const marker=new THREE.Mesh(new THREE.SphereGeometry(0.06,8,8), new THREE.MeshBasicMaterial({color:0xff0000}));
+      marker.position.copy(best.pos);
+      scene.add(marker);
+      state.pendingCuts.push({cane:best.cane,t:best.t,pos:best.pos,marker});
+    }
+  });
+  updatePending();
+}
 
 // Execute cuts with robot
 function executeCuts(){
@@ -408,9 +482,9 @@ renderer.domElement.addEventListener('wheel',e=>{radius*=1+e.deltaY*0.001;radius
 
 // keyboard
 window.addEventListener('keydown',e=>{
-  if(e.key==='Enter'){executeCuts();}
-  if(e.key==='Backspace'){undoLast();}
-  if(e.key.toLowerCase()==='r'){clearPending();}
+  if(e.key==='Enter'){state.viewMode==='real'?executeCuts():recordCuts();}
+  if(e.key==='Backspace' && state.viewMode==='digital'){undoLast();}
+  if(e.key.toLowerCase()==='r' && state.viewMode==='digital'){clearPending();}
 });
 
 // selection & double click
@@ -448,13 +522,23 @@ document.getElementById('centerSelect').onclick=()=>{state.selected.row=+documen
 document.getElementById('zoom').oninput=e=>{radius=+e.target.value;updateCamera();};
 document.getElementById('similarity').oninput=e=>{state.similarity=+e.target.value;buildVineyard();centerSelected();};
 document.getElementById('caneAngle').oninput=e=>{state.caneAngle=+e.target.value;buildVineyard();centerSelected();};
-document.getElementById('execCuts').onclick=executeCuts;
+document.getElementById('recordCuts').onclick=recordCuts;
+document.getElementById('replayCuts').onclick=executeCuts;
+document.getElementById('loadCuts').onclick=()=>fileInput.click();
+fileInput.onchange=e=>{
+  const file=e.target.files[0];
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=()=>{try{loadCuts(JSON.parse(reader.result));}catch(err){console.error(err);}};
+  reader.readAsText(file);
+};
 document.getElementById('undoCut').onclick=undoLast;
 document.getElementById('clearCuts').onclick=clearPending;
 document.getElementById('resetLearned').onclick=()=>{localStorage.removeItem('vine_pruning_cuts_3d_v2_curves_with_buds');state.storedCuts=[];document.getElementById('learningStats').textContent='Learning stats';updateRecommendations();};
+document.querySelectorAll('input[name=viewMode]').forEach(r=>r.addEventListener('change',e=>setViewMode(e.target.value)));
 
 // Initial
-buildVineyard();
+setViewMode('digital');
 centerSelected();
 updatePending();
 
