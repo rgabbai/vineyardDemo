@@ -66,6 +66,10 @@
     <label>Zoom <input type="range" id="zoom" min="3" max="25" value="12"></label>
   </div>
   <div>
+    <label>Similarity <input type="range" id="similarity" min="0" max="1" step="0.1" value="0.5"></label>
+    <label>Cane Angle <input type="range" id="caneAngle" min="0" max="90" value="45"></label>
+  </div>
+  <div>
     <button id="execCuts">Execute Cuts (Enter)</button>
     <button id="undoCut">Undo Last (Backspace)</button>
     <button id="clearCuts">Clear Pending (R)</button>
@@ -85,7 +89,9 @@ const state = {
   vines: [], // array of vine groups
   selected: {row:0, vine:0},
   pendingCuts: [], // {cane, t, pos, marker}
-  storedCuts: JSON.parse(localStorage.getItem('vine_pruning_cuts_3d_v2_curves_with_buds')||'[]')
+  storedCuts: JSON.parse(localStorage.getItem('vine_pruning_cuts_3d_v2_curves_with_buds')||'[]'),
+  similarity: 0.5,
+  caneAngle: 45
 };
 
 // === Scene Setup ===
@@ -164,19 +170,21 @@ function buildVineyard(){
 function buildVine(group,vine){
   const barkMat=new THREE.MeshStandardMaterial({color:0x6d4c41, roughness:0.9});
   const metalMat=new THREE.MeshStandardMaterial({color:0x888888, metalness:0.8, roughness:0.3});
+  const randomness=1-state.similarity;
+  const rand=s=> (Math.random()-0.5)*2*s*randomness;
   // trunk
   let y=0;
   for(let i=0;i<4;i++){
     const radius=0.15-0.02*i;
     const cyl=new THREE.Mesh(new THREE.CylinderGeometry(radius*1.2,radius,0.4,8), barkMat);
-    cyl.position.set((Math.random()-0.5)*0.1,y+0.2,(Math.random()-0.5)*0.1);
+    cyl.position.set(rand(0.1),y+0.2,rand(0.1));
     group.add(cyl);
     y+=0.4;
   }
   // cordon
   const cPts=[];
   for(let i=-2;i<=2;i++){
-    cPts.push(new THREE.Vector3(i*0.5,1.5+Math.sin(i*0.5)*0.1,0));
+    cPts.push(new THREE.Vector3(i*0.5,1.5+Math.sin(i*0.5)*0.1*randomness,0));
   }
   const cordonCurve=new THREE.CatmullRomCurve3(cPts);
   const cordonGeo=new THREE.TubeGeometry(cordonCurve,32,0.07,8,false);
@@ -201,11 +209,12 @@ function buildVine(group,vine){
     group.add(spur);
     // cane
     const dir=Math.random()<0.5?-1:1;
-    const canePts=[spurCurve.getPoint(1)];
-    const len=3+Math.random()*2;
-    const mid=spurCurve.getPoint(1).clone().add(new THREE.Vector3(dir*len*0.3,0.3,len*0.3*(Math.random()-0.5)));
-    canePts.push(mid);
-    canePts.push(spurCurve.getPoint(1).clone().add(new THREE.Vector3(dir*len,0,0)));
+    const base=spurCurve.getPoint(1);
+    const len=3+Math.random()*2*randomness;
+    const angle=THREE.MathUtils.degToRad(state.caneAngle);
+    const end=base.clone().add(new THREE.Vector3(Math.cos(angle)*dir*len, Math.sin(angle)*len, 0));
+    const mid=base.clone().add(new THREE.Vector3(Math.cos(angle)*dir*len*0.5, Math.sin(angle)*len*0.5+0.3, rand(len*0.3)));
+    const canePts=[base,mid,end];
     const caneCurve=new THREE.CatmullRomCurve3(canePts);
     const caneGeo=new THREE.TubeGeometry(caneCurve,96,0.03,6,false);
     const cane=new THREE.Mesh(caneGeo,barkMat);
@@ -213,7 +222,7 @@ function buildVine(group,vine){
     group.add(cane);
     // buds
     const buds=[];
-    const budCount=4+Math.floor(Math.random()*5);
+    const budCount=4+Math.floor(Math.random()*5*randomness);
     for(let b=1;b<=budCount;b++){
       const tBud=b/(budCount+1);
       const budPos=caneCurve.getPoint(tBud);
@@ -251,15 +260,19 @@ function onPointerMove(e){
   if(hits.length>0){
     const hit=hits[0];
     const cane=state.vines.find(v=>v.canes.find(c=>c.mesh===hit.object)).canes.find(c=>c.mesh===hit.object);
-    const t=findNearestT(cane,hit.point);
-    const pos=cane.curve.getPoint(t);
-    const tangent=cane.curve.getTangent(t);
-    hoverMarker.position.copy(pos);
+    const localPoint=hit.point.clone();
+    cane.mesh.worldToLocal(localPoint);
+    const t=findNearestT(cane,localPoint);
+    const posLocal=cane.curve.getPoint(t);
+    const posWorld=cane.mesh.localToWorld(posLocal.clone());
+    const tangentLocal=cane.curve.getTangent(t);
+    const tangentWorld=tangentLocal.clone().applyMatrix4(new THREE.Matrix4().extractRotation(cane.mesh.matrixWorld));
+    hoverMarker.position.copy(posWorld);
     const q=new THREE.Quaternion();
-    q.setFromUnitVectors(new THREE.Vector3(0,0,1),tangent);
+    q.setFromUnitVectors(new THREE.Vector3(0,0,1),tangentWorld.normalize());
     hoverMarker.quaternion.copy(q);
     hoverMarker.visible=true;
-    hoverMarker.userData={cane,t,pos};
+    hoverMarker.userData={cane,t,pos:posWorld};
   }else{
     hoverMarker.visible=false;
   }
@@ -337,12 +350,18 @@ function executeCuts(){
 
 function applyCut(cut){
   const cane=cut.cane;
-  cane.tMax=cut.t;
-  const geo=new THREE.TubeGeometry(cane.curve,96,0.03,6,false,0,cane.tMax);
+  const pts=[]; const segs=20;
+  for(let i=0;i<=segs;i++){
+    const tt=cut.t*i/segs;
+    pts.push(cane.curve.getPoint(tt));
+  }
+  cane.curve=new THREE.CatmullRomCurve3(pts);
+  const geo=new THREE.TubeGeometry(cane.curve,96,0.03,6,false);
   cut.cane.mesh.geometry.dispose();
   cut.cane.mesh.geometry=geo;
   geo.computeBoundingSphere();
-  cane.buds.forEach(b=>{b.mesh.visible=b.t<=cane.tMax;});
+  cane.buds.forEach(b=>{b.mesh.visible=b.t<=cut.t;});
+  cane.tMax=1;
 }
 function saveCut(cut){
   const pos=cut.pos.clone().sub(cut.cane.mesh.parent.position);
@@ -427,6 +446,8 @@ document.getElementById('themeToggle').onclick=()=>{
 document.getElementById('applyLayout').onclick=()=>{state.rows=+document.getElementById('rows').value;state.vinesPerRow=+document.getElementById('vinesPerRow').value;buildVineyard();};
 document.getElementById('centerSelect').onclick=()=>{state.selected.row=+document.getElementById('selRow').value;state.selected.vine=+document.getElementById('selVine').value;centerSelected();};
 document.getElementById('zoom').oninput=e=>{radius=+e.target.value;updateCamera();};
+document.getElementById('similarity').oninput=e=>{state.similarity=+e.target.value;buildVineyard();centerSelected();};
+document.getElementById('caneAngle').oninput=e=>{state.caneAngle=+e.target.value;buildVineyard();centerSelected();};
 document.getElementById('execCuts').onclick=executeCuts;
 document.getElementById('undoCut').onclick=undoLast;
 document.getElementById('clearCuts').onclick=clearPending;
