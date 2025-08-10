@@ -24,6 +24,7 @@
     display: flex;
     height: 100vh;
     overflow: hidden;
+    position: relative;
   }
   #controls {
     width: 260px;
@@ -47,6 +48,15 @@
   }
   button { margin-top: 4px; }
   #robotControls button { width: 30px; height: 30px; }
+  #railPlatformFrame {
+    position: absolute;
+    bottom: 10px;
+    right: 10px;
+    width: 640px;
+    height: 480px;
+    border: none;
+    box-shadow: 0 0 8px rgba(0,0,0,0.5);
+  }
 </style>
 </head>
 <body data-theme="dark">
@@ -106,6 +116,7 @@
   <div id="learningStats">Learning stats</div>
 </div>
 <div id="stage"></div>
+<iframe id="railPlatformFrame" src="vineyard_platform.html"></iframe>
 <script type="module">
 import * as THREE from 'https://unpkg.com/three@0.161.0/build/three.module.js';
 
