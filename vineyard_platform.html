@@ -127,16 +127,18 @@ const overPath=new THREE.LineCurve3(
   new THREE.Vector3(HEADLAND_X,OVERHEAD_Z,(ROWS-1)*ROW_SPACING));
 const overGeo=new THREE.TubeGeometry(overPath,1,0.02,8,false);
 overhead.add(new THREE.Mesh(overGeo,new THREE.MeshStandardMaterial({color:0xaaaaaa})));
-
-const dropYs=[];
-for(let i=0;i<5;i++){
-  const y=(i/(5-1))*(ROWS-1)*ROW_SPACING;
-  dropYs.push(y);
+for(let r=0;r<ROWS;r++){
+  const y=r*ROW_SPACING;
   const dPath=new THREE.LineCurve3(
     new THREE.Vector3(HEADLAND_X,OVERHEAD_Z,y),
     new THREE.Vector3(HEADLAND_X,WIRE1_Z,y));
   const dGeo=new THREE.TubeGeometry(dPath,1,0.01,8,false);
-  overhead.add(new THREE.Mesh(dGeo,new THREE.MeshStandardMaterial({color:0xaaaaaa}))); 
+  overhead.add(new THREE.Mesh(dGeo,new THREE.MeshStandardMaterial({color:0xaaaaaa})));
+  const cPath=new THREE.LineCurve3(
+    new THREE.Vector3(HEADLAND_X,WIRE1_Z,y),
+    new THREE.Vector3(0,WIRE1_Z,y));
+  const cGeo=new THREE.TubeGeometry(cPath,1,0.01,8,false);
+  overhead.add(new THREE.Mesh(cGeo,new THREE.MeshStandardMaterial({color:0xaaaaaa})));
 }
 
 // dock/service
@@ -219,8 +221,8 @@ function applyJoints(){
 let mode='Traverse';
 let currentRow=0; // 0..ROWS-1
 let xPos=0; // along row
+let zPos=currentRow*ROW_SPACING; // across rows in transfer
 let transferY=OVERHEAD_Z; // used in transfer
-let selectedDrop=0;
 let estop=false;
 let toolMode='Pruner';
 let teleTarget=null;
@@ -259,7 +261,8 @@ const hud=document.getElementById('hud');
 const help=document.getElementById('help');
 help.innerHTML=`<b>Keymap</b><br>
 Arrow Left/Right: move<br>
-Ctrl+←/→: change row<br>
+Ctrl+←/→: change row (Traverse/Teleop)<br>
+Arrow Up/Down: move between rows (Transfer)<br>
 Home: to overhead<br>End: to row<br>
 PageUp/PageDown: raise/lower (Transfer)<br>
 Q/A,W/S,E/D,R/F,T/G,Y/H: joints<br>
@@ -275,8 +278,22 @@ function logEvent(msg){logs.push(msg);while(logs.length>6)logs.shift();logDiv.in
 
 function toggleEstop(){estop=!estop;teleTarget=null;targetMarker.visible=false;logEvent(estop?'E-STOP':'Resume');if(estop) mode='Traverse';}
 
-function attachOverhead(){mode='Transfer';teleTarget=null;targetMarker.visible=false;transferY=OVERHEAD_Z;selectedDrop=0;carriage.position.set(HEADLAND_X,transferY,dropYs[selectedDrop]);logEvent('Transfer mode');}
-function attachRow(){mode='Traverse';teleTarget=null;targetMarker.visible=false;carriage.position.set(xPos,WIRE1_Z+0.05,currentRow*ROW_SPACING);logEvent('Traverse mode');}
+function attachOverhead(){
+  mode='Transfer';
+  teleTarget=null;targetMarker.visible=false;
+  transferY=OVERHEAD_Z;
+  xPos=HEADLAND_X;
+  zPos=currentRow*ROW_SPACING;
+  carriage.position.set(xPos,transferY,zPos);
+  logEvent('Transfer mode');
+}
+function attachRow(){
+  mode='Traverse';
+  teleTarget=null;targetMarker.visible=false;
+  currentRow=Math.round(zPos/ROW_SPACING);
+  carriage.position.set(xPos,WIRE1_Z+0.05,currentRow*ROW_SPACING);
+  logEvent('Traverse mode');
+}
 
 renderer.domElement.addEventListener('click',e=>{
   if(mode!=='Teleop') return;
@@ -305,8 +322,8 @@ function animate(){
       if(keys['ArrowLeft'])dir=-1;
       if(keys['ArrowRight'])dir=1;
       xPos=THREE.MathUtils.clamp(xPos+dir*carriageSpeed*dt,0,ROW_LEN);
-      if(keys['ArrowLeft']&&keys['ControlLeft']&&xPos<=0&&currentRow>0){currentRow--;xPos=0;}
-      if(keys['ArrowRight']&&keys['ControlLeft']&&xPos>=ROW_LEN&&currentRow<ROWS-1){currentRow++;xPos=ROW_LEN;}
+      if(keys['ArrowLeft']&&keys['ControlLeft']&&xPos<=0&&currentRow>0){currentRow--;zPos=currentRow*ROW_SPACING;xPos=0;}
+      if(keys['ArrowRight']&&keys['ControlLeft']&&xPos>=ROW_LEN&&currentRow<ROWS-1){currentRow++;zPos=currentRow*ROW_SPACING;xPos=ROW_LEN;}
       carriage.position.set(xPos,WIRE1_Z+0.05,currentRow*ROW_SPACING);
     }else if(mode==='Teleop'){
       let dir=0;
@@ -315,8 +332,8 @@ function animate(){
       if(dir!==0){
         teleTarget=null;targetMarker.visible=false;
         xPos=THREE.MathUtils.clamp(xPos+dir*carriageSpeed*dt,0,ROW_LEN);
-        if(keys['ControlLeft']&&dir<0&&xPos<=0&&currentRow>0){currentRow--;xPos=0;}
-        if(keys['ControlLeft']&&dir>0&&xPos>=ROW_LEN&&currentRow<ROWS-1){currentRow++;xPos=ROW_LEN;}
+        if(keys['ControlLeft']&&dir<0&&xPos<=0&&currentRow>0){currentRow--;zPos=currentRow*ROW_SPACING;xPos=0;}
+        if(keys['ControlLeft']&&dir>0&&xPos>=ROW_LEN&&currentRow<ROWS-1){currentRow++;zPos=currentRow*ROW_SPACING;xPos=ROW_LEN;}
       }else if(teleTarget!==null){
         const delta=teleTarget-xPos;
         const step=Math.sign(delta)*carriageSpeed*dt;
@@ -330,9 +347,16 @@ function animate(){
     }else if(mode==='Transfer'){
       if(keys['PageUp']) transferY=THREE.MathUtils.clamp(transferY+transferSpeed*dt,WIRE1_Z+0.05,OVERHEAD_Z);
       if(keys['PageDown']) transferY=THREE.MathUtils.clamp(transferY-transferSpeed*dt,WIRE1_Z+0.05,OVERHEAD_Z);
-      if(keys['ArrowLeft']&&keys['ControlLeft']&&selectedDrop>0) selectedDrop--;
-      if(keys['ArrowRight']&&keys['ControlLeft']&&selectedDrop<dropYs.length-1) selectedDrop++;
-      carriage.position.set(HEADLAND_X,transferY,dropYs[selectedDrop]);
+      let dir=0;
+      if(keys['ArrowLeft']) dir=-1;
+      if(keys['ArrowRight']) dir=1;
+      xPos=THREE.MathUtils.clamp(xPos+dir*carriageSpeed*dt,HEADLAND_X,0);
+      let zdir=0;
+      if(keys['ArrowUp']) zdir=-1;
+      if(keys['ArrowDown']) zdir=1;
+      zPos=THREE.MathUtils.clamp(zPos+zdir*carriageSpeed*dt,0,(ROWS-1)*ROW_SPACING);
+      currentRow=Math.round(zPos/ROW_SPACING);
+      carriage.position.set(xPos,transferY,zPos);
     }else if(mode==='Work'){
       let dir=0;
       if(keys['ArrowLeft'])dir=-1;
