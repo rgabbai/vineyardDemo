@@ -385,10 +385,10 @@ function attachRow(){
   logEvent('Traverse mode');
 }
 
-function startAutoTransfer(row){
+function startAutoTransfer(row,nextMode='Teleop'){
   if(row<0||row>=rows||row===currentRow) return;
   teleTarget=null;targetMarker.visible=false;
-  autoTransfer={targetRow:row,phase:(xPos===HEADLAND_X?'up':'toHeadland')};
+  autoTransfer={targetRow:row,phase:(xPos===HEADLAND_X?'up':'toHeadland'),nextMode};
   mode='AutoTransfer';
   transferY=WIRE1_Z+0.05;
   logEvent('Auto transfer to row '+row);
@@ -426,8 +426,12 @@ function updateAutoTransfer(dt){
     carriage.position.set(xPos,transferY,zPos);
     if(transferY<=WIRE1_Z+0.05){
       currentRow=autoTransfer.targetRow;
+      const nextMode=autoTransfer.nextMode;
       autoTransfer=null;
-      mode='Teleop';
+      if(nextMode==='Program' || nextMode==='Traverse'){
+        xPos=0;
+      }
+      mode=nextMode;
       carriage.position.set(xPos,WIRE1_Z+0.05,currentRow*ROW_SPACING);
       logEvent(`Arrived at row ${currentRow}`);
     }
@@ -443,12 +447,10 @@ function updateProgram(dt){
     if(currentRow>=program.endRow){
       logEvent('Program complete');
       program=null;
-      mode='Traverse';
+      startAutoTransfer(0,'Traverse');
+      logEvent('Returning to base');
     }else{
-      currentRow++;
-      zPos=currentRow*ROW_SPACING;
-      xPos=0;
-      carriage.position.set(xPos,WIRE1_Z+0.05,zPos);
+      startAutoTransfer(currentRow+1,'Program');
     }
   }
 }
