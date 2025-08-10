@@ -46,7 +46,7 @@
     vertical-align: middle;
   }
   button { margin-top: 4px; }
-  #robot { display: none; }
+  #robotControls button { width: 30px; height: 30px; }
 </style>
 </head>
 <body data-theme="dark">
@@ -81,6 +81,24 @@
     <button id="undoCut">Undo Last (Backspace)</button>
     <button id="clearCuts">Clear Pending (R)</button>
   </div>
+  <div id="robotControls">
+    <div>Move Rover</div>
+    <div style="display:flex;gap:4px;align-items:center">
+      <div></div>
+      <button id="moveForward">&#9650;</button>
+      <div></div>
+    </div>
+    <div style="display:flex;gap:4px;align-items:center">
+      <button id="moveLeft">&#9668;</button>
+      <button id="moveBackward">&#9660;</button>
+      <button id="moveRight">&#9658;</button>
+    </div>
+    <div>Arm Joints</div>
+    <div><button id="basePlus">Base+</button><button id="baseMinus">Base-</button></div>
+    <div><button id="shoulderPlus">Shoulder+</button><button id="shoulderMinus">Shoulder-</button></div>
+    <div><button id="elbowPlus">Elbow+</button><button id="elbowMinus">Elbow-</button></div>
+    <div><button id="wristPlus">Wrist+</button><button id="wristMinus">Wrist-</button></div>
+  </div>
   <div>
     <button id="resetLearned">Reset Learned Data</button>
   </div>
@@ -107,6 +125,7 @@ const state = {
   cutFileHandle: null,
   cutPlaybackHandle: null,
   randomSeed: Math.floor(Math.random()*1e9)
+  ,rover:{x:0,z:0}
 };
 
 function mulberry32(a){
@@ -239,6 +258,11 @@ function applyAngles(){
 }
 applyAngles();
 
+function updateRobot(){
+  robot.position.set(state.rover.x,0,state.rover.z);
+}
+updateRobot();
+
 const armMoveSpeed=2;
 
 function solveIK(p){
@@ -272,7 +296,7 @@ function anglesClose(a,b){
   return Object.keys(a).every(k=>Math.abs(a[k]-b[k])<0.01);
 }
 
-robot.visible=false;
+robot.visible=true;
 scene.add(robot);
 
 // === Helpers ===
@@ -301,7 +325,7 @@ function setViewMode(mode){
   state.vineColor = mode==='real'?0xC9A885:0x6d4c41;
   updateVineColors();
   ground.visible = mode==='real';
-  robot.visible = false;
+  robot.visible = true;
   hoverMarker.visible = false;
   clearPending();
   if(mode==='real'){
@@ -654,7 +678,7 @@ function executeCuts(onComplete){
   function step(time){
     if(!lastTime) lastTime=time; const dt=(time-lastTime)/1000; lastTime=time;
     if(i>=state.pendingCuts.length){
-      robot.visible=false;
+      robot.visible=true;
       clearPending();
       renderer.setAnimationLoop(renderLoop);
       clearPlaybackFile();
@@ -751,10 +775,39 @@ renderer.domElement.addEventListener('wheel',e=>{radius*=1+e.deltaY*0.001;radius
 
 // keyboard
 window.addEventListener('keydown',e=>{
-  if(e.key==='Enter'){state.viewMode==='real'?executeCuts():recordCuts();}
-  if(e.key==='Backspace' && state.viewMode==='digital'){undoLast();}
-  if(e.key.toLowerCase()==='r' && state.viewMode==='digital'){clearPending();}
+  const key=e.key;
+  if(key==='Enter'){state.viewMode==='real'?executeCuts():recordCuts();}
+  if(key==='Backspace' && state.viewMode==='digital'){undoLast();}
+  if(key.toLowerCase()==='r' && state.viewMode==='digital'){clearPending();}
+  const step=0.5;
+  switch(key){
+    case 'ArrowUp': state.rover.z-=step; updateRobot(); break;
+    case 'ArrowDown': state.rover.z+=step; updateRobot(); break;
+    case 'ArrowLeft': state.rover.x-=step; updateRobot(); break;
+    case 'ArrowRight': state.rover.x+=step; updateRobot(); break;
+    case 'q': case 'Q': armAngles.base+=0.1; applyAngles(); break;
+    case 'a': case 'A': armAngles.base-=0.1; applyAngles(); break;
+    case 'w': case 'W': armAngles.shoulder+=0.1; applyAngles(); break;
+    case 's': case 'S': armAngles.shoulder-=0.1; applyAngles(); break;
+    case 'e': case 'E': armAngles.elbow+=0.1; applyAngles(); break;
+    case 'd': case 'D': armAngles.elbow-=0.1; applyAngles(); break;
+    case 'r': case 'R': if(state.viewMode!=='digital'){armAngles.wrist+=0.1; applyAngles();} break;
+    case 'f': case 'F': armAngles.wrist-=0.1; applyAngles(); break;
+  }
 });
+
+document.getElementById('moveForward').addEventListener('click',()=>{state.rover.z-=0.5;updateRobot();});
+document.getElementById('moveBackward').addEventListener('click',()=>{state.rover.z+=0.5;updateRobot();});
+document.getElementById('moveLeft').addEventListener('click',()=>{state.rover.x-=0.5;updateRobot();});
+document.getElementById('moveRight').addEventListener('click',()=>{state.rover.x+=0.5;updateRobot();});
+document.getElementById('basePlus').addEventListener('click',()=>{armAngles.base+=0.1;applyAngles();});
+document.getElementById('baseMinus').addEventListener('click',()=>{armAngles.base-=0.1;applyAngles();});
+document.getElementById('shoulderPlus').addEventListener('click',()=>{armAngles.shoulder+=0.1;applyAngles();});
+document.getElementById('shoulderMinus').addEventListener('click',()=>{armAngles.shoulder-=0.1;applyAngles();});
+document.getElementById('elbowPlus').addEventListener('click',()=>{armAngles.elbow+=0.1;applyAngles();});
+document.getElementById('elbowMinus').addEventListener('click',()=>{armAngles.elbow-=0.1;applyAngles();});
+document.getElementById('wristPlus').addEventListener('click',()=>{armAngles.wrist+=0.1;applyAngles();});
+document.getElementById('wristMinus').addEventListener('click',()=>{armAngles.wrist-=0.1;applyAngles();});
 
 // selection & double click
 renderer.domElement.addEventListener('dblclick',e=>{
