@@ -4,249 +4,320 @@
 <meta charset="UTF-8" />
 <title>Vineyard Teleoperation Platform</title>
 <style>
-/* MIT License
-Copyright (c) 2024
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-*/
 html,body{margin:0;height:100%;overflow:hidden;background:#111;color:#eee;font-family:sans-serif}
 #stage{width:100%;height:100%;display:block}
-#hud{position:absolute;top:4px;left:4px;color:#eee;font-size:12px;user-select:none}
+#hud{position:absolute;top:4px;left:4px;font-size:12px;background:rgba(0,0,0,0.4);padding:4px;border-radius:4px}
+#help{position:absolute;top:4px;right:4px;font-size:12px;background:rgba(0,0,0,0.8);padding:8px;display:none;max-width:300px}
+#log{position:absolute;bottom:4px;left:4px;font-size:11px;background:rgba(0,0,0,0.4);padding:4px;border-radius:4px;max-width:220px}
+#buttons{position:absolute;bottom:4px;right:4px;display:flex;gap:4px}
+#buttons button{font-size:12px;padding:4px 6px}
+#sliders{position:absolute;top:4px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.4);padding:4px;border-radius:4px;font-size:12px;display:flex;gap:8px;align-items:center}
 </style>
 </head>
 <body>
 <div id="stage"></div>
-<div id="hud">Use mouse to orbit. Arrow keys move rover, Q/A base, W/S shoulder, E/D elbow, R/F wrist.</div>
+<div id="hud"></div>
+<div id="help"></div>
+<div id="log"></div>
+<div id="buttons">
+  <button id="btnTraverse">Traverse</button>
+  <button id="btnTransfer">Transfer</button>
+  <button id="btnWork">Work</button>
+  <button id="btnDock">Dock</button>
+  <button id="btnEstop">E-Stop</button>
+</div>
+<div id="sliders">
+  <label>Carriage <input id="carriageSpeed" type="range" min="0.2" max="2" step="0.1" value="1"></label>
+  <label>Joint <input id="jointSpeed" type="range" min="10" max="90" step="5" value="30"></label>
+  <label>Transfer <input id="transferSpeed" type="range" min="0.2" max="1.5" step="0.1" value="0.5"></label>
+</div>
 <script type="module">
+// MIT License
+// Copyright (c) 2024
+
 import * as THREE from 'https://unpkg.com/three@0.161.0/build/three.module.js';
+import {OrbitControls} from 'https://unpkg.com/three@0.161.0/examples/jsm/controls/OrbitControls.js';
 
-const state={
-  rows:6,
-  vinesPerRow:5,
-  vines:[],
-  rowSpacing:5,
-  vineSpacing:4,
-  vineColor:0xC9A885,
-  similarity:0.5,
-  caneAngle:45,
-  randomSeed:1,
-  x:0,
-  row:0
-};
+// ---- constants ----
+const ROWS=6;            // number of rows
+const ROW_LEN=80;        // meters
+const ROW_SPACING=2.5;   // meters between rows
+const CORDON_Z=1.0;      // meters
+const WIRE1_Z=1.2;
+const WIRE2_Z=1.3;
+const OVERHEAD_Z=3.0;
+const HEADLAND_X=-2;     // X position of overhead traverse wire
 
-function mulberry32(a){
-  return function(){a|=0; a=(a+0x6D2B79F5)|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296;};
-}
-
-// renderer, camera, scene
+// ---- renderer / scene / camera ----
 const renderer=new THREE.WebGLRenderer({antialias:true});
-renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setSize(window.innerWidth,window.innerHeight);
 document.getElementById('stage').appendChild(renderer.domElement);
+renderer.shadowMap.enabled=true;
 
 const scene=new THREE.Scene();
-const camera=new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight,0.1,1000);
-let theta=0.5, phi=0.9, radius=20, target=new THREE.Vector3();
-scene.add(new THREE.HemisphereLight(0xffffff,0x222222,0.9));
-scene.add(new THREE.DirectionalLight(0xffffff,0.6));
+scene.add(new THREE.AmbientLight(0xffffff,0.6));
+const dir=new THREE.DirectionalLight(0xffffff,0.6);
+dir.position.set(10,10,5);
+dir.castShadow=true;
+scene.add(dir);
 
-const ground=new THREE.Mesh(new THREE.PlaneGeometry(200,200),
-  new THREE.MeshStandardMaterial({color:0xbfd8a5, roughness:1}));
+const camera=new THREE.PerspectiveCamera(50,window.innerWidth/window.innerHeight,0.1,500);
+camera.position.set(-10,5,10);
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true;
+
+// ground plane + grid
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(120,40),new THREE.MeshStandardMaterial({color:0x333333}));
 ground.rotation.x=-Math.PI/2;
+ground.receiveShadow=true;
 scene.add(ground);
+scene.add(new THREE.GridHelper(120,60,0x444444,0x222222));
 
-function updateCamera(){
-  const x=radius*Math.sin(phi)*Math.cos(theta);
-  const y=radius*Math.cos(phi);
-  const z=radius*Math.sin(phi)*Math.sin(theta);
-  camera.position.set(x+target.x,y+target.y,z+target.z);
-  camera.lookAt(target);
-}
-updateCamera();
+// ---- vineyard geometry ----
+const posts=new THREE.Group();
+const wires=new THREE.Group();
+const cordons=new THREE.Group();
+scene.add(posts);scene.add(wires);scene.add(cordons);
 
-// build vineyard
-function clearVineyard(){state.vines.forEach(v=>scene.remove(v.group));state.vines=[];}
-
-function buildVineyard(){
-  clearVineyard();
-  const rng=mulberry32(state.randomSeed);
-  for(let r=0;r<state.rows;r++){
-    for(let i=0;i<state.vinesPerRow;i++){
-      const g=new THREE.Group();
-      g.position.set(i*state.vineSpacing,0,r*state.rowSpacing);
-      scene.add(g);
-      const vine={group:g,canes:[],cordonCenter:new THREE.Vector3()};
-      buildVine(g,vine,rng);
-      state.vines.push(vine);
-    }
+for(let r=0;r<ROWS;r++){
+  const rowY=r*ROW_SPACING; // across-row coordinate -> three.js z
+  // twin wires along row
+  for(let j=0;j<2;j++){
+    const zlevel=j===0?WIRE1_Z:WIRE2_Z;
+    const path=new THREE.LineCurve3(
+      new THREE.Vector3(0,zlevel,rowY),
+      new THREE.Vector3(ROW_LEN,zlevel,rowY));
+    const tube=new THREE.TubeGeometry(path,1,0.01,8,false);
+    const mesh=new THREE.Mesh(tube,new THREE.MeshStandardMaterial({color:0x888888}));
+    mesh.castShadow=true;mesh.receiveShadow=true;
+    wires.add(mesh);
+  }
+  // posts every 5 m
+  for(let x=0;x<=ROW_LEN;x+=5){
+    const radius=(x===0||x===ROW_LEN)?0.06:0.04;
+    const height=1.6;
+    const post=new THREE.Mesh(new THREE.CylinderGeometry(radius,radius,height,8),new THREE.MeshStandardMaterial({color:0x8B5A2B}));
+    post.position.set(x,height/2,rowY);
+    if(x===0) post.rotation.z=THREE.MathUtils.degToRad(-10);
+    if(x===ROW_LEN) post.rotation.z=THREE.MathUtils.degToRad(10);
+    post.castShadow=true;post.receiveShadow=true;
+    posts.add(post);
+  }
+  // cordon stubs every 0.5 m
+  for(let x=0;x<=ROW_LEN;x+=0.5){
+    const stub=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.1,6),new THREE.MeshStandardMaterial({color:0xAA7744}));
+    stub.position.set(x,CORDON_Z,rowY);
+    cordons.add(stub);
   }
 }
 
-function buildVine(group,vine,rng){
-  const barkMat=new THREE.MeshStandardMaterial({color:state.vineColor,roughness:0.9});
-  const metalMat=new THREE.MeshStandardMaterial({color:0x888888,metalness:0.8,roughness:0.3});
-  const randomness=1-state.similarity;
-  const rand=s=>(rng()-0.5)*2*s*randomness;
-  let y=0;
-  for(let i=0;i<4;i++){
-    const radius=0.15-0.02*i;
-    const cyl=new THREE.Mesh(new THREE.CylinderGeometry(radius*1.2,radius,0.4,8),barkMat);
-    cyl.position.set(rand(0.1),y+0.2,rand(0.1));
-    group.add(cyl);
-    y+=0.4;
-  }
-  const cPts=[];
-  for(let i=-2;i<=2;i++){
-    cPts.push(new THREE.Vector3(i*0.5,1.5+Math.sin(i*0.5)*0.1*randomness,0));
-  }
-  const cordonCurve=new THREE.CatmullRomCurve3(cPts);
-  const cordonGeo=new THREE.TubeGeometry(cordonCurve,32,0.07,8,false);
-  const cordon=new THREE.Mesh(cordonGeo,barkMat);
-  group.add(cordon);
-  vine.cordonCenter=cordonCurve.getPoint(0.5);
-  const spurCount=6;
-  for(let s=0;s<spurCount;s++){
-    const t=s/(spurCount-1);
-    const pos=cordonCurve.getPoint(t);
-    const tangent=cordonCurve.getTangent(t).normalize();
-    const up=new THREE.Vector3(0,1,0);
-    const normal=new THREE.Vector3().crossVectors(up,tangent).normalize();
-    const spurCurve=new THREE.CatmullRomCurve3([
-      pos,
-      pos.clone().add(normal.clone().multiplyScalar(0.2)),
-      pos.clone().add(normal.clone().multiplyScalar(0.3)).add(new THREE.Vector3(0,0.3,0))
-    ]);
-    const spurGeo=new THREE.TubeGeometry(spurCurve,16,0.05,6,false);
-    const spur=new THREE.Mesh(spurGeo,barkMat);
-    group.add(spur);
-    const dir=rng()<0.5?-1:1;
-    const base=spurCurve.getPoint(1);
-    const len=3+rng()*2*randomness;
-    const angle=THREE.MathUtils.degToRad(state.caneAngle);
-    const end=base.clone().add(new THREE.Vector3(Math.cos(angle)*dir*len, Math.sin(angle)*len, 0));
-    const mid=base.clone().add(new THREE.Vector3(Math.cos(angle)*dir*len*0.5, Math.sin(angle)*len*0.5+0.3, rand(len*0.3)));
-    const canePts=[base,mid,end];
-    const caneCurve=new THREE.CatmullRomCurve3(canePts);
-    const caneGeo=new THREE.TubeGeometry(caneCurve,96,0.03,6,false);
-    const cane=new THREE.Mesh(caneGeo,barkMat);
-    group.add(cane);
-  }
-  const postMat=metalMat;
-  const post1=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,2,8),postMat);
-  post1.position.set(-3,1,0);
-  const post2=post1.clone(); post2.position.x=3;
-  group.add(post1);group.add(post2);
-  const wireGeo=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-3,1.5,0),new THREE.Vector3(3,1.5,0)]);
-  const wire=new THREE.Line(wireGeo,new THREE.LineBasicMaterial({color:0x888888}));
-  group.add(wire);
+// overhead traverse wire and drop lines
+const overhead=new THREE.Group();
+scene.add(overhead);
+const overPath=new THREE.LineCurve3(
+  new THREE.Vector3(HEADLAND_X,OVERHEAD_Z,0),
+  new THREE.Vector3(HEADLAND_X,OVERHEAD_Z,(ROWS-1)*ROW_SPACING));
+const overGeo=new THREE.TubeGeometry(overPath,1,0.02,8,false);
+overhead.add(new THREE.Mesh(overGeo,new THREE.MeshStandardMaterial({color:0xaaaaaa})));
+
+const dropYs=[];
+for(let i=0;i<5;i++){
+  const y=(i/(5-1))*(ROWS-1)*ROW_SPACING;
+  dropYs.push(y);
+  const dPath=new THREE.LineCurve3(
+    new THREE.Vector3(HEADLAND_X,OVERHEAD_Z,y),
+    new THREE.Vector3(HEADLAND_X,WIRE1_Z,y));
+  const dGeo=new THREE.TubeGeometry(dPath,1,0.01,8,false);
+  overhead.add(new THREE.Mesh(dGeo,new THREE.MeshStandardMaterial({color:0xaaaaaa}))); 
 }
 
-buildVineyard();
+// dock/service
+const dock=new THREE.Group();
+dock.position.set(HEADLAND_X-1,0.25,-2);
+const dockBase=new THREE.Mesh(new THREE.BoxGeometry(1,0.5,1),new THREE.MeshStandardMaterial({color:0x555555}));
+dock.add(dockBase);
+const panel=new THREE.Mesh(new THREE.PlaneGeometry(1,0.6),new THREE.MeshStandardMaterial({color:0x2222ff}));
+panel.position.set(0,0.5,0);
+panel.rotation.x=-Math.PI/4;
+dock.add(panel);
+const battery=new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.2,0.6,12),new THREE.MeshStandardMaterial({color:0x00ff00}));
+battery.position.set(0.4,0.3,0);
+dock.add(battery);
+scene.add(dock);
 
-// robot with arm
-const robot=new THREE.Group();
-const chassis=new THREE.Mesh(new THREE.BoxGeometry(0.6,0.2,0.4),new THREE.MeshStandardMaterial({color:0x444444}));
-chassis.position.y=0.2; robot.add(chassis);
-const wheelGeo=new THREE.CylinderGeometry(0.1,0.1,0.05,16); wheelGeo.rotateZ(Math.PI/2);
+// ---- carriage + arm ----
+const carriage=new THREE.Group();
+const body=new THREE.Mesh(new THREE.BoxGeometry(0.4,0.2,0.4),new THREE.MeshStandardMaterial({color:0x4444ff}));
+body.castShadow=true;body.receiveShadow=true;
+carriage.add(body);
+const wheelGeo=new THREE.CylinderGeometry(0.05,0.05,0.1,12);
+wheelGeo.rotateZ(Math.PI/2);
 const wheelMat=new THREE.MeshStandardMaterial({color:0x222222});
-[[0.25,0.1,0.2],[-0.25,0.1,0.2],[0.25,0.1,-0.2],[-0.25,0.1,-0.2]].forEach(p=>{
-  const w=new THREE.Mesh(wheelGeo,wheelMat); w.position.set(p[0],p[1],p[2]); robot.add(w);
-});
-const arm=new THREE.Group(); const armBaseHeight=0.35; arm.position.set(0,armBaseHeight,0);
-const L1=0.4, L2=0.4, L3=0.25;
-const baseJoint=new THREE.Group(); arm.add(baseJoint);
-const shoulder=new THREE.Group(); baseJoint.add(shoulder);
-const upper=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,L1,12),new THREE.MeshStandardMaterial({color:0x777777}));
-upper.geometry.translate(0,L1/2,0); shoulder.add(upper);
-const elbow=new THREE.Group(); elbow.position.y=L1; shoulder.add(elbow);
-const forearm=new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,L2,12),new THREE.MeshStandardMaterial({color:0x777777}));
-forearm.geometry.translate(0,L2/2,0); elbow.add(forearm);
-const wristYaw=new THREE.Group(); wristYaw.position.y=L2; elbow.add(wristYaw);
-const wristPitch=new THREE.Group(); wristYaw.add(wristPitch);
-const wrist=new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,L3,12),new THREE.MeshStandardMaterial({color:0x777777}));
-wrist.geometry.translate(0,L3/2,0); wristPitch.add(wrist);
-const cutterJoint=new THREE.Group(); cutterJoint.position.y=L3; wristPitch.add(cutterJoint);
-const blade=new THREE.Mesh(new THREE.BoxGeometry(0.1,0.02,0.3),new THREE.MeshStandardMaterial({color:0xcc0000}));
-blade.rotation.z=Math.PI/2; cutterJoint.add(blade);
-robot.add(arm);
-scene.add(robot);
+const wheel1=new THREE.Mesh(wheelGeo,wheelMat);wheel1.position.set(0,-0.05,0.15);
+const wheel2=wheel1.clone();wheel2.position.z=-0.15;
+carriage.add(wheel1);carriage.add(wheel2);
+const tetherGeo=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0.1,0),new THREE.Vector3(0,2,0)]);
+const tether=new THREE.Line(tetherGeo,new THREE.LineBasicMaterial({color:0xff0000}));
+carriage.add(tether);
+scene.add(carriage);
 
-const armAngles={base:0,shoulder:0,elbow:0,wrist:0};
-function applyAngles(){
-  baseJoint.rotation.y=armAngles.base;
-  shoulder.rotation.z=armAngles.shoulder;
-  elbow.rotation.z=armAngles.elbow;
-  wristPitch.rotation.z=armAngles.wrist;
+// arm segments
+const L1=0.25,L2=0.30,L3=0.20,L4=0.10;
+const joints={yaw:0,shoulder:0,elbow:0,wristPitch:0,wristRoll:0,gripper:0};
+const base=new THREE.Group();
+base.position.set(0,0.1,0);
+carriage.add(base);
+const yawJoint=new THREE.Group();
+base.add(yawJoint);
+const shoulder=new THREE.Group();
+yawJoint.add(shoulder);
+const upper=new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,L1,12),new THREE.MeshStandardMaterial({color:0xffaa00}));
+upper.position.y=L1/2;
+shoulder.add(upper);
+const elbow=new THREE.Group();
+elbow.position.y=L1;
+shoulder.add(elbow);
+const fore=new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.025,L2,12),new THREE.MeshStandardMaterial({color:0xffaa00}));
+fore.position.y=L2/2;
+elbow.add(fore);
+const wristPitch=new THREE.Group();
+wristPitch.position.y=L2;
+elbow.add(wristPitch);
+const wrist=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,L3,12),new THREE.MeshStandardMaterial({color:0xffaa00}));
+wrist.position.y=L3/2;
+wristPitch.add(wrist);
+const wristRoll=new THREE.Group();
+wristRoll.position.y=L3;
+wristPitch.add(wristRoll);
+const tool=new THREE.Mesh(new THREE.CylinderGeometry(0.015,0.015,L4,12),new THREE.MeshStandardMaterial({color:0x999999}));
+tool.rotation.x=Math.PI/2;tool.position.y=L4/2;
+wristRoll.add(tool);
+const axes=new THREE.AxesHelper(0.1);
+axes.position.y=L4;
+wristRoll.add(axes);
+const reachSphere=new THREE.Mesh(new THREE.SphereGeometry(0.4,16,16),new THREE.MeshBasicMaterial({color:0x00ff00,transparent:true,opacity:0.1}));
+reachSphere.visible=false;
+wristRoll.add(reachSphere);
+
+function applyJoints(){
+  yawJoint.rotation.y=THREE.MathUtils.degToRad(joints.yaw);
+  shoulder.rotation.z=THREE.MathUtils.degToRad(joints.shoulder);
+  elbow.rotation.z=THREE.MathUtils.degToRad(joints.elbow);
+  wristPitch.rotation.z=THREE.MathUtils.degToRad(joints.wristPitch);
+  wristRoll.rotation.y=THREE.MathUtils.degToRad(joints.wristRoll);
 }
-applyAngles();
 
-function updateRobot(){
-  robot.position.set(state.x,0,state.row*state.rowSpacing);
-}
+// ---- state ----
+let mode='Traverse';
+let currentRow=0; // 0..ROWS-1
+let xPos=0; // along row
+let transferY=OVERHEAD_Z; // used in transfer
+let selectedDrop=0;
+let estop=false;
+let toolMode='Pruner';
 
-// controls
-let isDragging=false,prevX=0,prevY=0;
-renderer.domElement.addEventListener('mousedown',e=>{isDragging=true;prevX=e.clientX;prevY=e.clientY;});
-window.addEventListener('mouseup',()=>isDragging=false);
-window.addEventListener('mousemove',e=>{
-  if(!isDragging) return;
-  const dx=(e.clientX-prevX)/window.innerWidth;
-  const dy=(e.clientY-prevY)/window.innerHeight;
-  theta-=dx*3; phi-=dy*3; phi=Math.max(0.1,Math.min(Math.PI-0.1,phi));
-  prevX=e.clientX; prevY=e.clientY; updateCamera();
-});
-renderer.domElement.addEventListener('wheel',e=>{
-  radius*=1+e.deltaY*0.001;
-  radius=Math.max(3,Math.min(60,radius)); updateCamera();
-});
+carriage.position.set(0,WIRE1_Z+0.05,currentRow*ROW_SPACING);
 
+// ---- controls ----
+const keys={};
 window.addEventListener('keydown',e=>{
-  const step=0.1;
-  switch(e.key){
-    case 'ArrowRight': state.x+=0.5; break;
-    case 'ArrowLeft': state.x-=0.5; break;
-    case 'ArrowUp': state.row=Math.max(0,state.row-1); break;
-    case 'ArrowDown': state.row=Math.min(state.rows-1,state.row+1); break;
-    case 'Q': armAngles.base+=step; applyAngles(); break;
-    case 'A': armAngles.base-=step; applyAngles(); break;
-    case 'W': armAngles.shoulder+=step; applyAngles(); break;
-    case 'S': armAngles.shoulder-=step; applyAngles(); break;
-    case 'E': armAngles.elbow+=step; applyAngles(); break;
-    case 'D': armAngles.elbow-=step; applyAngles(); break;
-    case 'R': armAngles.wrist+=step; applyAngles(); break;
-    case 'F': armAngles.wrist-=step; applyAngles(); break;
-  }
-  updateRobot();
+  keys[e.code]=true;
+  if(e.code==='Slash' && e.shiftKey) toggleHelp();
+  if(e.code==='KeyP'){toolMode=toolMode==='Pruner'?'Brush':'Pruner';logEvent('Tool '+toolMode);}
+  if(e.code==='Enter'){logEvent('Tool action');}
+  if(e.code==='Home') attachOverhead();
+  if(e.code==='End') attachRow();
+  if(e.code==='Space') toggleEstop();
 });
+window.addEventListener('keyup',e=>{keys[e.code]=false;});
 
-function render(){
-  requestAnimationFrame(render);
+document.getElementById('btnTraverse').onclick=attachRow;
+document.getElementById('btnTransfer').onclick=attachOverhead;
+document.getElementById('btnWork').onclick=()=>{mode='Work';logEvent('Work mode');};
+document.getElementById('btnDock').onclick=()=>{carriage.position.set(HEADLAND_X-1,0.25,-2);xPos=0;mode='Traverse';logEvent('Dock');};
+document.getElementById('btnEstop').onclick=toggleEstop;
+
+let carriageSpeed=parseFloat(localStorage.getItem('carriageSpeed')||'1');
+let jointSpeed=parseFloat(localStorage.getItem('jointSpeed')||'30');
+let transferSpeed=parseFloat(localStorage.getItem('transferSpeed')||'0.5');
+const cs=document.getElementById('carriageSpeed');cs.value=carriageSpeed;cs.oninput=e=>{carriageSpeed=parseFloat(e.target.value);localStorage.setItem('carriageSpeed',carriageSpeed);};
+const js=document.getElementById('jointSpeed');js.value=jointSpeed;js.oninput=e=>{jointSpeed=parseFloat(e.target.value);localStorage.setItem('jointSpeed',jointSpeed);};
+const ts=document.getElementById('transferSpeed');ts.value=transferSpeed;ts.oninput=e=>{transferSpeed=parseFloat(e.target.value);localStorage.setItem('transferSpeed',transferSpeed);};
+
+// ---- HUD & Help ----
+const hud=document.getElementById('hud');
+const help=document.getElementById('help');
+help.innerHTML=`<b>Keymap</b><br>
+Arrow Left/Right: move<br>
+Ctrl+←/→: change row<br>
+Home: to overhead<br>End: to row<br>
+PageUp/PageDown: raise/lower (Transfer)<br>
+Q/A,W/S,E/D,R/F,T/G,Y/H: joints<br>
+P: toggle tool, Enter: action<br>
+Space: E-Stop<br>? : toggle help`;
+
+function toggleHelp(){help.style.display=help.style.display==='none'||help.style.display===''?'block':'none';}
+
+const logDiv=document.getElementById('log');
+const logs=[];
+function logEvent(msg){logs.push(msg);while(logs.length>6)logs.shift();logDiv.innerHTML=logs.join('<br>');}
+
+function toggleEstop(){estop=!estop;logEvent(estop?'E-STOP':'Resume');if(estop) mode='Traverse';}
+
+function attachOverhead(){mode='Transfer';transferY=OVERHEAD_Z;selectedDrop=0;carriage.position.set(HEADLAND_X,transferY,dropYs[selectedDrop]);logEvent('Transfer mode');}
+function attachRow(){mode='Traverse';carriage.position.set(xPos,WIRE1_Z+0.05,currentRow*ROW_SPACING);logEvent('Traverse mode');}
+
+// ---- animation loop ----
+const clock=new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const dt=clock.getDelta();
+  controls.update();
+  if(!estop){
+    if(mode==='Traverse'){
+      let dir=0;
+      if(keys['ArrowLeft'])dir=-1;
+      if(keys['ArrowRight'])dir=1;
+      xPos=THREE.MathUtils.clamp(xPos+dir*carriageSpeed*dt,0,ROW_LEN);
+      if(keys['ArrowLeft']&&keys['ControlLeft']&&xPos<=0&&currentRow>0){currentRow--;xPos=0;}
+      if(keys['ArrowRight']&&keys['ControlLeft']&&xPos>=ROW_LEN&&currentRow<ROWS-1){currentRow++;xPos=ROW_LEN;}
+      carriage.position.set(xPos,WIRE1_Z+0.05,currentRow*ROW_SPACING);
+    }else if(mode==='Transfer'){
+      if(keys['PageUp']) transferY=THREE.MathUtils.clamp(transferY+transferSpeed*dt,WIRE1_Z+0.05,OVERHEAD_Z);
+      if(keys['PageDown']) transferY=THREE.MathUtils.clamp(transferY-transferSpeed*dt,WIRE1_Z+0.05,OVERHEAD_Z);
+      if(keys['ArrowLeft']&&keys['ControlLeft']&&selectedDrop>0) selectedDrop--;
+      if(keys['ArrowRight']&&keys['ControlLeft']&&selectedDrop<dropYs.length-1) selectedDrop++;
+      carriage.position.set(HEADLAND_X,transferY,dropYs[selectedDrop]);
+    }else if(mode==='Work'){
+      let dir=0;
+      if(keys['ArrowLeft'])dir=-1;
+      if(keys['ArrowRight'])dir=1;
+      xPos=THREE.MathUtils.clamp(xPos+dir*carriageSpeed*0.25*dt,0,ROW_LEN);
+      carriage.position.set(xPos,WIRE1_Z+0.05,currentRow*ROW_SPACING);
+      if(keys['KeyQ']) joints.yaw+=jointSpeed*dt; if(keys['KeyA']) joints.yaw-=jointSpeed*dt; joints.yaw=THREE.MathUtils.clamp(joints.yaw,-170,170);
+      if(keys['KeyW']) joints.shoulder+=jointSpeed*dt; if(keys['KeyS']) joints.shoulder-=jointSpeed*dt; joints.shoulder=THREE.MathUtils.clamp(joints.shoulder,-20,110);
+      if(keys['KeyE']) joints.elbow+=jointSpeed*dt; if(keys['KeyD']) joints.elbow-=jointSpeed*dt; joints.elbow=THREE.MathUtils.clamp(joints.elbow,-10,140);
+      if(keys['KeyR']) joints.wristPitch+=jointSpeed*dt; if(keys['KeyF']) joints.wristPitch-=jointSpeed*dt; joints.wristPitch=THREE.MathUtils.clamp(joints.wristPitch,-90,90);
+      if(keys['KeyT']) joints.wristRoll+=jointSpeed*dt; if(keys['KeyG']) joints.wristRoll-=jointSpeed*dt; joints.wristRoll=THREE.MathUtils.clamp(joints.wristRoll,-180,180);
+    }
+    applyJoints();
+  }
+
+  reachSphere.visible=mode==='Work';
+  const eef=new THREE.Vector3();
+  axes.getWorldPosition(eef);
+  hud.innerHTML=`Mode: ${mode} Row:${currentRow} X:${xPos.toFixed(2)}m<br>EEF: ${eef.x.toFixed(2)},${eef.y.toFixed(2)},${eef.z.toFixed(2)}<br>Tool:${toolMode} Battery:100% Link:100%`;
   renderer.render(scene,camera);
 }
-updateRobot();
-render();
+
+animate();
 
 window.addEventListener('resize',()=>{
-  renderer.setSize(window.innerWidth,window.innerHeight);
   camera.aspect=window.innerWidth/window.innerHeight;
   camera.updateProjectionMatrix();
-  updateCamera();
+  renderer.setSize(window.innerWidth,window.innerHeight);
 });
+
 </script>
 </body>
 </html>
