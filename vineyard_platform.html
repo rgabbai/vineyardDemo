@@ -22,6 +22,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111;color:#eee;font-f
 <div id="buttons">
   <button id="btnTraverse">Traverse</button>
   <button id="btnTransfer">Transfer</button>
+  <button id="btnTeleop">Teleop</button>
   <button id="btnWork">Work</button>
   <button id="btnDock">Dock</button>
   <button id="btnEstop">E-Stop</button>
@@ -65,6 +66,13 @@ const camera=new THREE.PerspectiveCamera(50,window.innerWidth/window.innerHeight
 camera.position.set(-10,5,10);
 const controls=new OrbitControls(camera,renderer.domElement);
 controls.enableDamping=true;
+
+// teleoperation helpers
+const raycaster=new THREE.Raycaster();
+const pointer=new THREE.Vector2();
+const targetMarker=new THREE.Mesh(new THREE.SphereGeometry(0.05,8,8),new THREE.MeshBasicMaterial({color:0xff0000}));
+targetMarker.visible=false;
+scene.add(targetMarker);
 
 // ground plane + grid
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(120,40),new THREE.MeshStandardMaterial({color:0x333333}));
@@ -215,6 +223,7 @@ let transferY=OVERHEAD_Z; // used in transfer
 let selectedDrop=0;
 let estop=false;
 let toolMode='Pruner';
+let teleTarget=null;
 
 carriage.position.set(0,WIRE1_Z+0.05,currentRow*ROW_SPACING);
 
@@ -233,8 +242,9 @@ window.addEventListener('keyup',e=>{keys[e.code]=false;});
 
 document.getElementById('btnTraverse').onclick=attachRow;
 document.getElementById('btnTransfer').onclick=attachOverhead;
-document.getElementById('btnWork').onclick=()=>{mode='Work';logEvent('Work mode');};
-document.getElementById('btnDock').onclick=()=>{carriage.position.set(HEADLAND_X-1,0.25,-2);xPos=0;mode='Traverse';logEvent('Dock');};
+document.getElementById('btnTeleop').onclick=()=>{mode='Teleop';teleTarget=null;targetMarker.visible=false;logEvent('Teleop mode');};
+document.getElementById('btnWork').onclick=()=>{mode='Work';teleTarget=null;targetMarker.visible=false;logEvent('Work mode');};
+document.getElementById('btnDock').onclick=()=>{carriage.position.set(HEADLAND_X-1,0.25,-2);xPos=0;mode='Traverse';teleTarget=null;targetMarker.visible=false;logEvent('Dock');};
 document.getElementById('btnEstop').onclick=toggleEstop;
 
 let carriageSpeed=parseFloat(localStorage.getItem('carriageSpeed')||'1');
@@ -254,6 +264,7 @@ Home: to overhead<br>End: to row<br>
 PageUp/PageDown: raise/lower (Transfer)<br>
 Q/A,W/S,E/D,R/F,T/G,Y/H: joints<br>
 P: toggle tool, Enter: action<br>
+Teleop: click to set destination<br>
 Space: E-Stop<br>? : toggle help`;
 
 function toggleHelp(){help.style.display=help.style.display==='none'||help.style.display===''?'block':'none';}
@@ -262,10 +273,25 @@ const logDiv=document.getElementById('log');
 const logs=[];
 function logEvent(msg){logs.push(msg);while(logs.length>6)logs.shift();logDiv.innerHTML=logs.join('<br>');}
 
-function toggleEstop(){estop=!estop;logEvent(estop?'E-STOP':'Resume');if(estop) mode='Traverse';}
+function toggleEstop(){estop=!estop;teleTarget=null;targetMarker.visible=false;logEvent(estop?'E-STOP':'Resume');if(estop) mode='Traverse';}
 
-function attachOverhead(){mode='Transfer';transferY=OVERHEAD_Z;selectedDrop=0;carriage.position.set(HEADLAND_X,transferY,dropYs[selectedDrop]);logEvent('Transfer mode');}
-function attachRow(){mode='Traverse';carriage.position.set(xPos,WIRE1_Z+0.05,currentRow*ROW_SPACING);logEvent('Traverse mode');}
+function attachOverhead(){mode='Transfer';teleTarget=null;targetMarker.visible=false;transferY=OVERHEAD_Z;selectedDrop=0;carriage.position.set(HEADLAND_X,transferY,dropYs[selectedDrop]);logEvent('Transfer mode');}
+function attachRow(){mode='Traverse';teleTarget=null;targetMarker.visible=false;carriage.position.set(xPos,WIRE1_Z+0.05,currentRow*ROW_SPACING);logEvent('Traverse mode');}
+
+renderer.domElement.addEventListener('click',e=>{
+  if(mode!=='Teleop') return;
+  pointer.x=(e.clientX/window.innerWidth)*2-1;
+  pointer.y=-(e.clientY/window.innerHeight)*2+1;
+  raycaster.setFromCamera(pointer,camera);
+  const plane=new THREE.Plane(new THREE.Vector3(0,0,1),-currentRow*ROW_SPACING);
+  const pos=new THREE.Vector3();
+  if(raycaster.ray.intersectPlane(plane,pos)){
+    teleTarget=THREE.MathUtils.clamp(pos.x,0,ROW_LEN);
+    targetMarker.position.set(teleTarget,WIRE1_Z+0.1,currentRow*ROW_SPACING);
+    targetMarker.visible=true;
+    logEvent(`Target ${teleTarget.toFixed(2)}m`);
+  }
+});
 
 // ---- animation loop ----
 const clock=new THREE.Clock();
@@ -281,6 +307,25 @@ function animate(){
       xPos=THREE.MathUtils.clamp(xPos+dir*carriageSpeed*dt,0,ROW_LEN);
       if(keys['ArrowLeft']&&keys['ControlLeft']&&xPos<=0&&currentRow>0){currentRow--;xPos=0;}
       if(keys['ArrowRight']&&keys['ControlLeft']&&xPos>=ROW_LEN&&currentRow<ROWS-1){currentRow++;xPos=ROW_LEN;}
+      carriage.position.set(xPos,WIRE1_Z+0.05,currentRow*ROW_SPACING);
+    }else if(mode==='Teleop'){
+      let dir=0;
+      if(keys['ArrowLeft'])dir=-1;
+      if(keys['ArrowRight'])dir=1;
+      if(dir!==0){
+        teleTarget=null;targetMarker.visible=false;
+        xPos=THREE.MathUtils.clamp(xPos+dir*carriageSpeed*dt,0,ROW_LEN);
+        if(keys['ControlLeft']&&dir<0&&xPos<=0&&currentRow>0){currentRow--;xPos=0;}
+        if(keys['ControlLeft']&&dir>0&&xPos>=ROW_LEN&&currentRow<ROWS-1){currentRow++;xPos=ROW_LEN;}
+      }else if(teleTarget!==null){
+        const delta=teleTarget-xPos;
+        const step=Math.sign(delta)*carriageSpeed*dt;
+        if(Math.abs(delta)<=Math.abs(step)){
+          xPos=teleTarget;teleTarget=null;targetMarker.visible=false;
+        }else{
+          xPos+=step;
+        }
+      }
       carriage.position.set(xPos,WIRE1_Z+0.05,currentRow*ROW_SPACING);
     }else if(mode==='Transfer'){
       if(keys['PageUp']) transferY=THREE.MathUtils.clamp(transferY+transferSpeed*dt,WIRE1_Z+0.05,OVERHEAD_Z);
