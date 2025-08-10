@@ -11,7 +11,10 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111;color:#eee;font-f
 #log{position:absolute;bottom:4px;left:4px;font-size:11px;background:rgba(0,0,0,0.4);padding:4px;border-radius:4px;max-width:220px}
 #buttons{position:absolute;bottom:4px;right:4px;display:flex;gap:4px}
 #buttons button{font-size:12px;padding:4px 6px}
-#sliders{position:absolute;top:4px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.4);padding:4px;border-radius:4px;font-size:12px;display:flex;gap:8px;align-items:center}
+#programControls{position:absolute;top:4px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.6);padding:4px;border-radius:4px;font-size:12px;display:flex;gap:4px;flex-wrap:wrap;align-items:center;justify-content:center}
+#programControls button{font-size:12px;padding:4px 6px}
+#programControls .taskBtn.active{background:#444}
+#sliders{position:absolute;top:60px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.4);padding:4px;border-radius:4px;font-size:12px;display:flex;gap:8px;align-items:center}
 #rowControls{position:absolute;bottom:40px;right:4px;display:flex;gap:4px;align-items:center;background:rgba(0,0,0,0.4);padding:4px;border-radius:4px;font-size:12px}
 #rowControls input{width:32px}
 #sizeControls{position:absolute;bottom:80px;right:4px;display:flex;gap:4px;align-items:center;background:rgba(0,0,0,0.4);padding:4px;border-radius:4px;font-size:12px}
@@ -43,6 +46,17 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111;color:#eee;font-f
   <input id="rowInput" type="number" min="0" max="5" value="0">
   <button id="btnRowMove">Move</button>
 </div>
+<div id="programControls">
+  <label>From <input id="startRow" type="number" min="0" value="0" style="width:32px"></label>
+  <label>To <input id="endRow" type="number" min="0" value="0" style="width:32px"></label>
+  <label>Length <input id="lengthInput" type="number" min="0" value="10" style="width:48px">m</label>
+  <button id="btnStartProgram">Start</button>
+  <button id="btnReturnBase">Return Base</button>
+  <button class="taskBtn" data-task="Digital Twin">Digital Twin</button>
+  <button class="taskBtn" data-task="Pruning">Pruning</button>
+  <button class="taskBtn" data-task="Leaf Removal">Leaf Removal</button>
+  <button class="taskBtn" data-task="Grape Picking">Grape Picking</button>
+</div>
 <div id="sliders">
   <label>Carriage <input id="carriageSpeed" type="range" min="0.2" max="2" step="0.1" value="1"></label>
   <label>Joint <input id="jointSpeed" type="range" min="10" max="90" step="5" value="30"></label>
@@ -66,6 +80,8 @@ const WIRE2_Z=1.95;
 const OVERHEAD_Z=3.0;
 const HEADLAND_X=-2;    // X position of overhead traverse wire
 let rowLen=(vines-1)*VINE_SPACING;
+let currentTask='Digital Twin';
+let program=null;
 
 // ---- renderer / scene / camera ----
 const renderer=new THREE.WebGLRenderer({antialias:true});
@@ -289,6 +305,40 @@ document.getElementById('btnApplySize').onclick=()=>{
   carriage.position.set(xPos,WIRE1_Z+0.05,zPos);
 };
 
+document.getElementById('btnStartProgram').onclick=()=>{
+  const sr=parseInt(document.getElementById('startRow').value,10);
+  const er=parseInt(document.getElementById('endRow').value,10);
+  const len=parseFloat(document.getElementById('lengthInput').value);
+  if(sr<0||er<0||sr>=rows||er>=rows||sr>er){logEvent('Invalid program');return;}
+  const L=Math.min(len,rowLen);
+  currentRow=sr;zPos=currentRow*ROW_SPACING;xPos=0;
+  teleTarget=null;targetMarker.visible=false;
+  carriage.position.set(xPos,WIRE1_Z+0.05,zPos);
+  program={startRow:sr,endRow:er,length:L};
+  mode='Program';
+  logEvent(`Program rows ${sr}-${er} len ${L}m task ${currentTask}`);
+};
+
+document.getElementById('btnReturnBase').onclick=()=>{
+  program=null;
+  currentRow=0;zPos=0;xPos=0;
+  teleTarget=null;targetMarker.visible=false;
+  carriage.position.set(xPos,WIRE1_Z+0.05,zPos);
+  mode='Traverse';
+  logEvent('Return to base');
+};
+
+const taskButtons=document.querySelectorAll('#programControls .taskBtn');
+taskButtons.forEach(btn=>{
+  btn.onclick=()=>{
+    currentTask=btn.dataset.task;
+    taskButtons.forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    logEvent(`Task ${currentTask}`);
+  };
+});
+taskButtons[0].classList.add('active');
+
 let carriageSpeed=parseFloat(localStorage.getItem('carriageSpeed')||'1');
 let jointSpeed=parseFloat(localStorage.getItem('jointSpeed')||'30');
 let transferSpeed=parseFloat(localStorage.getItem('transferSpeed')||'0.5');
@@ -384,6 +434,25 @@ function updateAutoTransfer(dt){
   }
 }
 
+function updateProgram(dt){
+  if(!program) return;
+  xPos=Math.min(program.length,xPos+carriageSpeed*dt);
+  carriage.position.set(xPos,WIRE1_Z+0.05,currentRow*ROW_SPACING);
+  if(xPos>=program.length){
+    logEvent(`${currentTask} row ${currentRow}`);
+    if(currentRow>=program.endRow){
+      logEvent('Program complete');
+      program=null;
+      mode='Traverse';
+    }else{
+      currentRow++;
+      zPos=currentRow*ROW_SPACING;
+      xPos=0;
+      carriage.position.set(xPos,WIRE1_Z+0.05,zPos);
+    }
+  }
+}
+
 renderer.domElement.addEventListener('click',e=>{
   if(mode!=='Teleop') return;
   pointer.x=(e.clientX/window.innerWidth)*2-1;
@@ -448,6 +517,8 @@ function animate(){
       carriage.position.set(xPos,transferY,zPos);
     }else if(mode==='AutoTransfer'){
       updateAutoTransfer(dt);
+    }else if(mode==='Program'){
+      updateProgram(dt);
     }else if(mode==='Work'){
       let dir=0;
       if(keys['ArrowLeft'])dir=-1;
