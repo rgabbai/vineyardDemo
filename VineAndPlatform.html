@@ -48,15 +48,6 @@
   }
   button { margin-top: 4px; }
   #robotControls button { width: 30px; height: 30px; }
-  #railPlatformFrame {
-    position: absolute;
-    bottom: 10px;
-    right: 10px;
-    width: 640px;
-    height: 480px;
-    border: none;
-    box-shadow: 0 0 8px rgba(0,0,0,0.5);
-  }
 </style>
 </head>
 <body data-theme="dark">
@@ -103,6 +94,16 @@
       <button id="moveBackward">&#9660;</button>
       <button id="moveRight">&#9658;</button>
     </div>
+    <div>Platform Mode</div>
+    <div id="platformButtons" style="display:flex;flex-wrap:wrap;gap:4px;">
+      <button id="btnTraverse">Traverse</button>
+      <button id="btnTransfer">Transfer</button>
+      <button id="btnTeleop">Teleop</button>
+      <button id="btnWork">Work</button>
+      <button id="btnDock">Dock</button>
+      <button id="btnEstop">E-Stop</button>
+    </div>
+    <div id="platformModeDisplay">Mode: Traverse</div>
     <div>Arm Joints</div>
     <div><button id="basePlus">Base+</button><button id="baseMinus">Base-</button></div>
     <div><button id="shoulderPlus">Shoulder+</button><button id="shoulderMinus">Shoulder-</button></div>
@@ -116,7 +117,6 @@
   <div id="learningStats">Learning stats</div>
 </div>
 <div id="stage"></div>
-<iframe id="railPlatformFrame" src="vineyard_platform.html"></iframe>
 <script type="module">
 import * as THREE from 'https://unpkg.com/three@0.161.0/build/three.module.js';
 
@@ -141,6 +141,8 @@ const state = {
   randomSeed: Math.floor(Math.random()*1e9),
   platform:{x:0,z:0}
 };
+
+const platformState={mode:'Traverse', estop:false};
 
 function mulberry32(a){
   return function(){
@@ -802,6 +804,17 @@ document.getElementById('elbowPlus').addEventListener('click',()=>{armAngles.elb
 document.getElementById('elbowMinus').addEventListener('click',()=>{armAngles.elbow-=0.1;applyAngles();});
 document.getElementById('wristPlus').addEventListener('click',()=>{armAngles.wrist+=0.1;applyAngles();});
 document.getElementById('wristMinus').addEventListener('click',()=>{armAngles.wrist-=0.1;applyAngles();});
+
+function setPlatformMode(m){
+  platformState.mode=m;
+  document.getElementById('platformModeDisplay').textContent=`Mode: ${m}`;
+}
+document.getElementById('btnTraverse').addEventListener('click',()=>setPlatformMode('Traverse'));
+document.getElementById('btnTransfer').addEventListener('click',()=>setPlatformMode('Transfer'));
+document.getElementById('btnTeleop').addEventListener('click',()=>setPlatformMode('Teleop'));
+document.getElementById('btnWork').addEventListener('click',()=>setPlatformMode('Work'));
+document.getElementById('btnDock').addEventListener('click',()=>setPlatformMode('Dock'));
+document.getElementById('btnEstop').addEventListener('click',()=>{platformState.estop=!platformState.estop;console.log('E-stop',platformState.estop);});
 
 // selection & double click
 renderer.domElement.addEventListener('dblclick',e=>{
