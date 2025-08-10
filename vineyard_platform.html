@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Vineyard Teleoperation Platform</title>
+<style>
+/* MIT License
+Copyright (c) 2024
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+html,body{margin:0;height:100%;overflow:hidden;background:#111;color:#eee;font-family:sans-serif}
+svg{width:100%;height:100%;display:block}
+#hud, #help, #log, #panel{position:absolute;color:#eee;font-size:12px;user-select:none;pointer-events:none}
+#hud{top:4px;left:4px;}
+#help{top:4px;right:4px;padding:4px;background:rgba(0,0,0,0.7);display:none;white-space:pre}
+#log{bottom:4px;left:4px;width:260px;height:80px;overflow:hidden;background:rgba(0,0,0,0.5);padding:4px;}
+#panel{top:50%;right:4px;transform:translateY(-50%);background:rgba(0,0,0,0.6);padding:6px;pointer-events:auto}
+.status{display:inline-block;padding:2px 6px;border-radius:8px;background:#444;margin-bottom:4px}
+button{pointer-events:auto;margin:2px;padding:4px 6px;background:#333;color:#eee;border:1px solid #555;border-radius:4px;cursor:pointer}
+button:focus{outline:1px solid #888}
+.slider{display:flex;align-items:center;margin:2px 0}
+.slider label{flex:1}
+.slider input{width:80px}
+.tooltip{position:absolute;background:#900;color:#fff;padding:2px 4px;border-radius:4px;font-size:10px;display:none}
+</style>
+</head>
+<body>
+<svg id="view" aria-label="Vineyard teleoperation view"></svg>
+<div id="hud"></div>
+<div id="help" aria-label="Keyboard map"></div>
+<div id="log" aria-live="polite"></div>
+<div id="panel" aria-label="Speed controls">
+  <div class="slider"><label>Carriage</label><input id="carSpeed" type="range" min="0.2" max="3" step="0.1" value="1"/></div>
+  <div class="slider"><label>Joint</label><input id="jointSpeed" type="range" min="10" max="120" step="5" value="60"/></div>
+  <div class="slider"><label>Transfer</label><input id="dropSpeed" type="range" min="0.2" max="2" step="0.1" value="0.5"/></div>
+  <button id="demoBtn">Demo</button>
+</div>
+<div id="tooltip" class="tooltip"></div>
+<div id="buttons" style="position:absolute;bottom:4px;right:4px;pointer-events:auto">
+ <button data-mode="Traverse">Traverse</button>
+ <button data-mode="Transfer">Transfer</button>
+ <button data-mode="Work">Work</button>
+ <button id="dockBtn">Dock</button>
+ <button id="stopBtn">E-Stop</button>
+</div>
+<script>
+// --- util --------------------------------------------------------------
+const util={clamp:(v,min,max)=>Math.max(min,Math.min(max,v)),lerp:(a,b,t)=>a+(b-a)*t};
+const S=40,ZS=40;
+const helpText=`Camera: drag-orbit, shift-drag pan, wheel zoom, C center
+Carriage: ←/→ move, Ctrl+←/→ switch rows
+Home: overhead (Transfer)
+End: row wires
+PageUp/PageDown: raise/lower (Transfer)
+Arm in Work: Q/A base, W/S shoulder, E/D elbow, R/F pitch, T/G roll, Y/H grip, P tool, Enter action
+Space: E-Stop, ?: help overlay`;
+document.getElementById("help").textContent=helpText;
+function project(p){return{x:(p.x-p.y)*S,y:(p.x+p.y)*S*0.5-p.z*ZS};}
+function log(msg){const logEl=document.getElementById('log');const lines=logEl.textContent.split('\n');lines.push(msg);while(lines.length>6)lines.shift();logEl.textContent=lines.join('\n');}
+// --- state -------------------------------------------------------------
+const state={
+ mode:'Traverse',eStop:false,row:3,x:5,y:0,z:0,drop:0,length:80,rowSpacing:2.5,rows:6,
+ arm:{
+  base:0,shoulder:20,elbow:30,wPitch:0,wRoll:0,grip:1
+ },tool:'Pruner',
+ battery:1,link:0.9,
+ settings:JSON.parse(localStorage.getItem('settings')||'{}')
+};
+state.carSpeed=state.settings.carSpeed||1;
+state.jointSpeed=state.settings.jointSpeed||60;
+state.dropSpeed=state.settings.dropSpeed||0.5;
+// --- camera ------------------------------------------------------------
+const camera={theta:Math.PI/4,phi:Math.PI/5,dist:60,focus:{x:5,y:state.row*state.rowSpacing,z:1},
+ updateFocus(){this.focus={x:state.x,y:state.row*state.rowSpacing,z:1};},
+ toWorld(screen){},
+ proj(p){return project(p);}};
+let mouse={x:0,y:0,drag:false,button:0};
+document.getElementById('view').addEventListener('mousedown',e=>{mouse={x:e.clientX,y:e.clientY,drag:true,button:e.button};});
+window.addEventListener('mouseup',()=>mouse.drag=false);
+window.addEventListener('mousemove',e=>{if(!mouse.drag)return;const dx=e.clientX-mouse.x,dy=e.clientY-mouse.y;mouse.x=e.clientX;mouse.y=e.clientY;if(mouse.button===0&&!e.shiftKey){camera.theta-=dx*0.01;camera.phi=util.clamp(camera.phi-dy*0.01,-Math.PI/2,Math.PI/2);}else{camera.focus.x-=dx*0.02;camera.focus.y+=dy*0.02;}});
+window.addEventListener('wheel',e=>{camera.dist=util.clamp(camera.dist+e.deltaY*0.05,10,150);});
+// --- arm kinematics ----------------------------------------------------
+function fk(){const L1=0.25,L2=0.3,L3=0.2,L4=0.1;const d2=state.arm.shoulder*Math.PI/180,d3=state.arm.elbow*Math.PI/180,d4=state.arm.wPitch*Math.PI/180;let x=0,y=0,z=0;z+=L1*Math.sin(d2);x+=L1*Math.cos(d2);z+=L2*Math.sin(d2+d3);x+=L2*Math.cos(d2+d3);z+=L3*Math.sin(d2+d3+d4);x+=L3*Math.cos(d2+d3+d4);x+=L4*Math.cos(d2+d3+d4);z+=L4*Math.sin(d2+d3+d4);return{x,y,z};}
+// --- drawing -----------------------------------------------------------
+const svg=document.getElementById('view');
+function clear(){while(svg.firstChild)svg.removeChild(svg.firstChild);} 
+function draw(){clear();drawScene();drawCarriage();drawHUD();}
+
+function drawScene(){
+  const g=document.createElementNS('http://www.w3.org/2000/svg','g');
+  for(let r=0;r<state.rows;r++){
+    const y=r*state.rowSpacing;
+    for(let x=0;x<=state.length;x+=5){
+      const p1=project({x,y,z:0}),p2=project({x,y,z:0.2});
+      const line=document.createElementNS('http://www.w3.org/2000/svg','line');
+      line.setAttribute('x1',p1.x);line.setAttribute('y1',p1.y);
+      line.setAttribute('x2',p2.x);line.setAttribute('y2',p2.y);
+      line.setAttribute('stroke','#444');g.appendChild(line);
+    }
+    const end=project({x:state.length,y,z:0});
+    const txt=document.createElementNS('http://www.w3.org/2000/svg','text');
+    txt.setAttribute('x',end.x);txt.setAttribute('y',end.y-10);
+    txt.textContent='R'+(r+1);txt.setAttribute('fill','#666');
+    g.appendChild(txt);
+  }
+  // simple dock with battery icon at headland
+  const pv=project({x:0,y:-state.rowSpacing,z:0});
+  const rect=document.createElementNS('http://www.w3.org/2000/svg','rect');
+  rect.setAttribute('x',pv.x-10);rect.setAttribute('y',pv.y-10);
+  rect.setAttribute('width',20);rect.setAttribute('height',10);
+  rect.setAttribute('fill','#222');rect.setAttribute('stroke','#0f0');
+  g.appendChild(rect);
+  svg.appendChild(g);
+}
+
+
+function drawCarriage(){
+  const car=document.createElementNS('http://www.w3.org/2000/svg','g');
+  const pos=project({x:state.x,y:state.row*state.rowSpacing,z:state.z});
+  car.setAttribute('transform',`translate(${pos.x},${pos.y})`);
+  const body=document.createElementNS('http://www.w3.org/2000/svg','rect');
+  body.setAttribute('x',-10);
+  body.setAttribute('y',-5);
+  body.setAttribute('width',20);
+  body.setAttribute('height',10);
+  body.setAttribute('fill','#888');
+  car.appendChild(body);
+  // simple 2D arm projection
+  const base=document.createElementNS('http://www.w3.org/2000/svg','g');
+  base.setAttribute('transform',`rotate(${state.arm.base})`);
+  const seg=document.createElementNS('http://www.w3.org/2000/svg','line');
+  const p=fk();
+  seg.setAttribute('x1',0);seg.setAttribute('y1',0);
+  seg.setAttribute('x2',p.x*ZS);seg.setAttribute('y2',-p.z*ZS);
+  seg.setAttribute('stroke','#0f0');seg.setAttribute('stroke-width',2);
+  base.appendChild(seg);car.appendChild(base);
+  if(state.mode==='Work'){
+    const bubble=document.createElementNS('http://www.w3.org/2000/svg','circle');
+    bubble.setAttribute('cx',p.x*ZS);bubble.setAttribute('cy',-p.z*ZS);
+    bubble.setAttribute('r',0.85*ZS);
+    bubble.setAttribute('fill','none');bubble.setAttribute('stroke','rgba(0,255,0,0.2)');
+    car.appendChild(bubble);
+    const axes=document.createElementNS('http://www.w3.org/2000/svg','g');
+    const ax=document.createElementNS('http://www.w3.org/2000/svg','line');
+    ax.setAttribute('x1',p.x*ZS);ax.setAttribute('y1',-p.z*ZS);
+    ax.setAttribute('x2',p.x*ZS+10);ax.setAttribute('y2',-p.z*ZS);
+    ax.setAttribute('stroke','#f00');axes.appendChild(ax);
+    const ay=document.createElementNS('http://www.w3.org/2000/svg','line');
+    ay.setAttribute('x1',p.x*ZS);ay.setAttribute('y1',-p.z*ZS);
+    ay.setAttribute('x2',p.x*ZS);ay.setAttribute('y2',-p.z*ZS-10);
+    ay.setAttribute('stroke','#0ff');axes.appendChild(ay);
+    car.appendChild(axes);
+  }
+  svg.appendChild(car);
+}
+ 
+// --- hud ---------------------------------------------------------------
+
+function drawHUD(){
+  const hud=document.getElementById('hud');
+  const e=fk();
+  const wx=(state.x+e.x).toFixed(2);
+  const wy=(state.row*state.rowSpacing).toFixed(2);
+  const wz=(state.z+e.z).toFixed(2);
+  hud.innerHTML=`<div class="status">${state.mode}</div>Row: ${state.row} &nbsp; X:${state.x.toFixed(1)}m<br/>EEF: ${wx},${wy},${wz}<br/>Tool:${state.tool} Battery:${Math.round(state.battery*100)}% Link:${Math.round(state.link*100)}%`;
+}
+// --- controls
+ ----------------------------------------------------------
+function setMode(m){if(state.eStop&&m!=='Traverse'){flash('E-STOP');return;}state.mode=m;log('Mode '+m);} 
+function flash(msg){const t=document.getElementById('tooltip');t.textContent=msg;t.style.display='block';setTimeout(()=>t.style.display='none',700);} 
+
+window.addEventListener('keydown',e=>{
+  if(e.key===' '){state.eStop=!state.eStop;state.mode=state.eStop?'ESTOP':'Traverse';log('E-STOP '+(state.eStop?'SET':'RESET'));return;}
+  if(e.key==='?'){const h=document.getElementById('help');h.style.display=h.style.display==='block'?'none':'block';return;}
+  if(e.key==='c' || e.key==='C'){camera.updateFocus();}
+  if(e.key==='1'){camera.theta=Math.PI/4;camera.phi=Math.PI/5;camera.dist=60;}
+  if(e.key==='2'){camera.theta=Math.PI/2;camera.phi=Math.PI/6;camera.dist=80;}
+  if(e.key==='3'){camera.theta=-Math.PI/4;camera.phi=Math.PI/3;camera.dist=70;}
+  if(e.key==='4'){/* free */}
+  if(state.mode==='Traverse'){
+    if(e.key==='ArrowRight')state.x=util.clamp(state.x+state.carSpeed*0.5,0,state.length);
+    if(e.key==='ArrowLeft')state.x=util.clamp(state.x-state.carSpeed*0.5,0,state.length);
+    if(e.ctrlKey&&e.key==='ArrowRight'){state.row=util.clamp(state.row+1,0,state.rows-1);camera.updateFocus();}
+    if(e.ctrlKey&&e.key==='ArrowLeft'){state.row=util.clamp(state.row-1,0,state.rows-1);camera.updateFocus();}
+  }
+  if(state.mode==='Transfer'){
+    if(e.key==='PageUp')state.z=util.clamp(state.z+state.dropSpeed*0.1,0,2);
+    if(e.key==='PageDown')state.z=util.clamp(state.z-state.dropSpeed*0.1,0,2);
+  }
+  if(state.mode==='Work'){
+    const step=state.jointSpeed*0.1;switch(e.key){
+      case'Q':state.arm.base=util.clamp(state.arm.base+step,-170,170);break;
+      case'A':state.arm.base=util.clamp(state.arm.base-step,-170,170);break;
+      case'W':state.arm.shoulder=util.clamp(state.arm.shoulder+step,-20,110);break;
+      case'S':state.arm.shoulder=util.clamp(state.arm.shoulder-step,-20,110);break;
+      case'E':state.arm.elbow=util.clamp(state.arm.elbow+step,-10,140);break;
+      case'D':state.arm.elbow=util.clamp(state.arm.elbow-step,-10,140);break;
+      case'R':state.arm.wPitch=util.clamp(state.arm.wPitch+step,-90,90);break;
+      case'F':state.arm.wPitch=util.clamp(state.arm.wPitch-step,-90,90);break;
+      case'T':state.arm.wRoll=util.clamp(state.arm.wRoll+step,-180,180);break;
+      case'G':state.arm.wRoll=util.clamp(state.arm.wRoll-step,-180,180);break;
+      case'Y':state.arm.grip=util.clamp(state.arm.grip+0.1,0,1);break;
+      case'H':state.arm.grip=util.clamp(state.arm.grip-0.1,0,1);break;
+      case'P':state.tool=state.tool==='Pruner'?'Brush':'Pruner';break;
+      case'Enter':log('Tool action');break;
+    }
+  }
+  if(e.key==='Home')setMode('Transfer');
+  if(e.key==='End')setMode('Traverse');
+});
+// speed// speed sliders persistence
+['carSpeed','jointSpeed','dropSpeed'].forEach(id=>{const el=document.getElementById(id);el.value=state[id];el.addEventListener('input',()=>{state[id]=parseFloat(el.value);state.settings[id]=state[id];localStorage.setItem('settings',JSON.stringify(state.settings));});});
+// button controls
+document.querySelectorAll("#buttons button[data-mode]").forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
+document.getElementById("dockBtn").onclick=()=>{state.x=0;state.row=0;camera.updateFocus();log("Docked");};
+document.getElementById("stopBtn").onclick=()=>{state.eStop=!state.eStop;state.mode=state.eStop?"ESTOP":"Traverse";};
+// demo sequence
+let demo=false;document.getElementById('demoBtn').onclick=()=>{demo=!demo;if(demo){let t=0;log('Demo start');state.mode='Traverse';function step(){if(!demo)return;if(t<5)state.x+=0.5;else if(t<10){setMode('Work');state.arm.shoulder+=2;}t+=0.1;if(t<10)requestAnimationFrame(step);else{demo=false;log('Demo end');}}requestAnimationFrame(step);}else{log('Demo stop');}};
+// loop
+function loop(){draw();requestAnimationFrame(loop);}loop();
+</script>
+</body>
+</html>
