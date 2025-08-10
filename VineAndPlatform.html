@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Vineyard Winter Pruning 3D MVP</title>
+<style>
+  :root {
+    --bg: #111;
+    --panel-bg: #222;
+    --text: #eee;
+    --accent: #f44336;
+  }
+  body[data-theme="light"] {
+    --bg: #fafafa;
+    --panel-bg: #fff;
+    --text: #111;
+    --accent: #d32f2f;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: sans-serif;
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
+  #controls {
+    width: 260px;
+    background: var(--panel-bg);
+    padding: 10px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  #stage { flex: 1; }
+  label { display: block; margin-top: 4px; }
+  input[type=number] { width: 70px; }
+  #pendingBadge {
+    background: var(--accent);
+    border-radius: 10px;
+    padding: 0 6px;
+    color: white;
+    font-size: 12px;
+    vertical-align: middle;
+  }
+  button { margin-top: 4px; }
+  #robotControls button { width: 30px; height: 30px; }
+</style>
+</head>
+<body data-theme="dark">
+<div id="controls">
+  <div>
+    <label><input type="radio" name="viewMode" value="real" checked> Real Vineyard</label>
+    <label><input type="radio" name="viewMode" value="digital"> Vineyard Digital Twin</label>
+  </div>
+  <button id="themeToggle">Toggle Theme</button>
+  <div id="layoutControls">
+    <label>Rows <input type="number" id="rows" value="1" min="1" max="10"></label>
+    <label>Vines/Row <input type="number" id="vinesPerRow" value="1" min="1" max="12"></label>
+    <button id="applyLayout">Apply Layout</button>
+  </div>
+  <div>
+    <label>Selected row <input type="number" id="selRow" value="0" min="0"></label>
+    <label>Selected vine <input type="number" id="selVine" value="0" min="0"></label>
+    <button id="centerSelect">Center & Select</button>
+  </div>
+  <div>
+    <label>Zoom <input type="range" id="zoom" min="3" max="25" value="12"></label>
+  </div>
+  <div id="realControls" style="display:none">
+    <label>Similarity <input type="range" id="similarity" min="0" max="1" step="0.1" value="0.5"></label>
+    <label>Cane Angle <input type="range" id="caneAngle" min="0" max="90" value="45"></label>
+    <button id="loadCuts">Load Cuts File</button>
+    <button id="replayCuts">Replay Cuts</button>
+    <div id="loadStatus"></div>
+  </div>
+  <div id="digitalControls">
+    <button id="recordCuts">Record Cuts (Enter)</button>
+    <button id="undoCut">Undo Last (Backspace)</button>
+    <button id="clearCuts">Clear Pending (R)</button>
+  </div>
+  <div id="robotControls">
+    <div>Move Platform</div>
+    <div style="display:flex;gap:4px;align-items:center">
+      <div></div>
+      <button id="moveForward">&#9650;</button>
+      <div></div>
+    </div>
+    <div style="display:flex;gap:4px;align-items:center">
+      <button id="moveLeft">&#9668;</button>
+      <button id="moveBackward">&#9660;</button>
+      <button id="moveRight">&#9658;</button>
+    </div>
+    <div>Arm Joints</div>
+    <div><button id="basePlus">Base+</button><button id="baseMinus">Base-</button></div>
+    <div><button id="shoulderPlus">Shoulder+</button><button id="shoulderMinus">Shoulder-</button></div>
+    <div><button id="elbowPlus">Elbow+</button><button id="elbowMinus">Elbow-</button></div>
+    <div><button id="wristPlus">Wrist+</button><button id="wristMinus">Wrist-</button></div>
+  </div>
+  <div>
+    <button id="resetLearned">Reset Learned Data</button>
+  </div>
+  <div>Pending: <span id="pendingBadge">0</span></div>
+  <div id="learningStats">Learning stats</div>
+</div>
+<div id="stage"></div>
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.161.0/build/three.module.js';
+
+// Height for the platform's travel wire
+const WIRE1_Z = 1.8;
+
+// === Config ===
+const state = {
+  rows: 1,
+  vinesPerRow: 1,
+  vines: [], // array of vine groups
+  selected: {row:0, vine:0},
+  pendingCuts: [], // {cane, t, pos, marker}
+  storedCuts: JSON.parse(localStorage.getItem('vine_pruning_cuts_3d_v2_curves_with_buds')||'[]'),
+  similarity: 0.5,
+  caneAngle: 45,
+  viewMode: 'real',
+  vineColor: 0xC9A885,
+  cutLog: [],
+  cutFileHandle: null,
+  cutPlaybackHandle: null,
+  randomSeed: Math.floor(Math.random()*1e9),
+  platform:{x:0,z:0}
+};
+
+function mulberry32(a){
+  return function(){
+    a|=0; a=(a+0x6D2B79F5)|0;
+    let t=Math.imul(a^a>>>15,1|a);
+    t=t+Math.imul(t^t>>>7,61|t)^t;
+    return ((t^t>>>14)>>>0)/4294967296;
+  };
+}
+
+// === Scene Setup ===
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth-260, window.innerHeight);
+document.getElementById('stage').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, (window.innerWidth-260)/window.innerHeight, 0.1, 1000);
+let theta=0.5, phi=1.0, radius=12, target=new THREE.Vector3();
+
+// Lights
+scene.add(new THREE.HemisphereLight(0xffffff,0x222222,0.9));
+scene.add(new THREE.DirectionalLight(0xffffff,0.6));
+
+// Ground for real vineyard view
+const ground=new THREE.Mesh(
+  new THREE.PlaneGeometry(200,200),
+  new THREE.MeshStandardMaterial({color:0xbfd8a5, roughness:1})
+);
+ground.rotation.x=-Math.PI/2;
+ground.visible=state.viewMode==='real';
+scene.add(ground);
+
+// Hover marker (scissors as simple red X)
+const hoverMarker = new THREE.Mesh(
+  new THREE.PlaneGeometry(0.4,0.4),
+  new THREE.MeshBasicMaterial({color:0xff0000, side:THREE.DoubleSide, transparent:true, opacity:0.8})
+);
+hoverMarker.visible=false;
+scene.add(hoverMarker);
+
+// Overhead platform with robotic arm
+const robot = new THREE.Group();
+
+// carriage body with wheels and tether
+const body=new THREE.Mesh(new THREE.BoxGeometry(0.4,0.2,0.4),new THREE.MeshStandardMaterial({color:0x4444ff}));
+body.castShadow=true;body.receiveShadow=true;
+robot.add(body);
+const wheelGeo=new THREE.CylinderGeometry(0.05,0.05,0.1,12);
+wheelGeo.rotateZ(Math.PI/2);
+const wheelMat=new THREE.MeshStandardMaterial({color:0x222222});
+const wheel1=new THREE.Mesh(wheelGeo,wheelMat);wheel1.position.set(0,-0.05,0.15);
+const wheel2=wheel1.clone();wheel2.position.z=-0.15;
+robot.add(wheel1);robot.add(wheel2);
+const tetherGeo=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0.1,0),new THREE.Vector3(0,2,0)]);
+const tether=new THREE.Line(tetherGeo,new THREE.LineBasicMaterial({color:0xff0000}));
+robot.add(tether);
+
+// robotic arm mounted on carriage
+const arm=new THREE.Group();
+const armBaseHeight=0.1;
+arm.position.set(0,armBaseHeight,0);
+robot.add(arm);
+
+// link lengths
+const L1=0.25, L2=0.30, L3=0.20, L4=0.10;
+
+// base yaw
+const baseJoint=new THREE.Group();
+arm.add(baseJoint);
+
+// shoulder pitch
+const shoulder=new THREE.Group();
+baseJoint.add(shoulder);
+const upper=new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,L1,12),new THREE.MeshStandardMaterial({color:0xffaa00}));
+upper.position.y=L1/2;
+shoulder.add(upper);
+
+// elbow pitch
+const elbow=new THREE.Group();
+elbow.position.y=L1;
+shoulder.add(elbow);
+const fore=new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.025,L2,12),new THREE.MeshStandardMaterial({color:0xffaa00}));
+fore.position.y=L2/2;
+elbow.add(fore);
+
+// wrist pitch and tool
+const wristPitch=new THREE.Group();
+wristPitch.position.y=L2;
+elbow.add(wristPitch);
+const wrist=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,L3,12),new THREE.MeshStandardMaterial({color:0xffaa00}));
+wrist.position.y=L3/2;
+wristPitch.add(wrist);
+const wristRoll=new THREE.Group();
+wristRoll.position.y=L3;
+wristPitch.add(wristRoll);
+const tool=new THREE.Mesh(new THREE.CylinderGeometry(0.015,0.015,L4,12),new THREE.MeshStandardMaterial({color:0x999999}));
+tool.rotation.x=Math.PI/2;tool.position.y=L4/2;
+wristRoll.add(tool);
+
+// arm initial state
+const armAngles={base:0,shoulder:0,elbow:0,wrist:0};
+const restAngles={base:0,shoulder:0,elbow:0,wrist:0};
+function applyAngles(){
+  baseJoint.rotation.y=armAngles.base;
+  shoulder.rotation.z=armAngles.shoulder;
+  elbow.rotation.z=armAngles.elbow;
+  wristPitch.rotation.z=armAngles.wrist;
+}
+applyAngles();
+
+function updatePlatform(){
+  robot.position.set(state.platform.x, WIRE1_Z+0.05, state.platform.z);
+}
+updatePlatform();
+
+const armMoveSpeed=2;
+
+function solveIK(p){
+  const x=p.x, y=p.y-armBaseHeight, z=p.z;
+  const base=Math.atan2(x,z);
+  const cos=Math.cos(-base), sin=Math.sin(-base);
+  const px=x*cos - z*sin;
+  const py=y;
+  const dist=Math.sqrt(px*px+py*py);
+  const reach=Math.max(0,dist-L3);
+  const c=Math.max(-1,Math.min(1,(reach*reach - L1*L1 - L2*L2)/(2*L1*L2)));
+  const elbowAng=Math.acos(c);
+  const shoulderAng=Math.atan2(py,px) - Math.atan2(L2*Math.sin(elbowAng), L1+L2*Math.cos(elbowAng));
+  const wristAng=Math.atan2(py,px) - shoulderAng - elbowAng;
+  return {base:base, shoulder:shoulderAng, elbow:elbowAng, wrist:wristAng};
+}
+
+function moveAnglesTowards(target, dt){
+  for(const k in armAngles){
+    const diff=target[k]-armAngles[k];
+    if(Math.abs(diff)>1e-3){
+      const step=Math.sign(diff)*armMoveSpeed*dt;
+      if(Math.abs(step)>Math.abs(diff)) armAngles[k]=target[k];
+      else armAngles[k]+=step;
+    }
+  }
+  applyAngles();
+}
+
+function anglesClose(a,b){
+  return Object.keys(a).every(k=>Math.abs(a[k]-b[k])<0.01);
+}
+
+robot.visible=true;
+scene.add(robot);
+
+// === Helpers ===
+function updateCamera(){
+  const x = radius*Math.sin(phi)*Math.cos(theta);
+  const y = radius*Math.cos(phi);
+  const z = radius*Math.sin(phi)*Math.sin(theta);
+  camera.position.set(x+target.x,y+target.y,z+target.z);
+  camera.lookAt(target);
+  renderer.render(scene,camera);
+}
+updateCamera();
+
+function themeUpdate(){
+  const bg = getComputedStyle(document.body).getPropertyValue('--bg');
+  renderer.setClearColor(new THREE.Color(bg.trim()));
+}
+
+themeUpdate();
+
+function setViewMode(mode){
+  state.viewMode = mode;
+  document.getElementById('digitalControls').style.display = mode==='digital'? 'block':'none';
+  document.getElementById('realControls').style.display = mode==='real'? 'block':'none';
+  document.getElementById('layoutControls').style.display = mode==='real'? 'block':'none';
+  state.vineColor = mode==='real'?0xC9A885:0x6d4c41;
+  updateVineColors();
+  ground.visible = mode==='real';
+  robot.visible = true;
+  hoverMarker.visible = false;
+  clearPending();
+  if(mode==='real'){
+    buildVineyard();
+  }
+  if(mode==='digital'){
+    initCutFile();
+    reapplyDigitalCuts();
+  }
+  centerSelected();
+}
+
+function updateVineColors(){
+  state.vines.forEach(v=>{ if(v.barkMat) v.barkMat.color.set(state.vineColor); });
+}
+
+// === Vineyard Building ===
+function clearVineyard(){
+  state.vines.forEach(v=>scene.remove(v.group));
+  state.vines=[];
+}
+
+function buildVineyard(){
+  clearVineyard();
+  const rng=mulberry32(state.randomSeed);
+  const rowSpacing=5, vineSpacing=4;
+  for(let r=0;r<state.rows;r++){
+    for(let i=0;i<state.vinesPerRow;i++){
+      const g=new THREE.Group();
+      g.position.set(i*vineSpacing,0,r*rowSpacing);
+      scene.add(g);
+      const vine={group:g, canes:[], cordonCenter:new THREE.Vector3(), index:{row:r,vine:i}};
+      buildVine(g,vine,rng);
+      state.vines.push(vine);
+    }
+  }
+  if(state.cutLog.length>0 && state.viewMode==='digital'){
+    reapplyDigitalCuts();
+  }
+}
+
+function buildVine(group,vine,rng){
+  const barkMat=new THREE.MeshStandardMaterial({color:state.vineColor, roughness:0.9});
+  vine.barkMat = barkMat;
+  const metalMat=new THREE.MeshStandardMaterial({color:0x888888, metalness:0.8, roughness:0.3});
+  const randomness=1-state.similarity;
+  const rand=s=> (rng()-0.5)*2*s*randomness;
+  // trunk
+  let y=0;
+  for(let i=0;i<4;i++){
+    const radius=0.15-0.02*i;
+    const cyl=new THREE.Mesh(new THREE.CylinderGeometry(radius*1.2,radius,0.4,8), barkMat);
+    cyl.position.set(rand(0.1),y+0.2,rand(0.1));
+    group.add(cyl);
+    y+=0.4;
+  }
+  // cordon
+  const cPts=[];
+  for(let i=-2;i<=2;i++){
+    cPts.push(new THREE.Vector3(i*0.5,1.5+Math.sin(i*0.5)*0.1*randomness,0));
+  }
+  const cordonCurve=new THREE.CatmullRomCurve3(cPts);
+  const cordonGeo=new THREE.TubeGeometry(cordonCurve,32,0.07,8,false);
+  const cordon=new THREE.Mesh(cordonGeo,barkMat);
+  group.add(cordon);
+  vine.cordonCenter=cordonCurve.getPoint(0.5);
+  // spurs + canes
+  const spurCount=6;
+  for(let s=0;s<spurCount;s++){
+    const t=s/(spurCount-1);
+    const pos=cordonCurve.getPoint(t);
+    const tangent=cordonCurve.getTangent(t).normalize();
+    const up=new THREE.Vector3(0,1,0);
+    const normal=new THREE.Vector3().crossVectors(up,tangent).normalize();
+    const spurCurve=new THREE.CatmullRomCurve3([
+      pos,
+      pos.clone().add(normal.clone().multiplyScalar(0.2)),
+      pos.clone().add(normal.clone().multiplyScalar(0.3)).add(new THREE.Vector3(0,0.3,0))
+    ]);
+    const spurGeo=new THREE.TubeGeometry(spurCurve,16,0.05,6,false);
+    const spur=new THREE.Mesh(spurGeo,barkMat);
+    group.add(spur);
+    // cane
+    const dir=rng()<0.5?-1:1;
+    const base=spurCurve.getPoint(1);
+    const len=3+rng()*2*randomness;
+    const angle=THREE.MathUtils.degToRad(state.caneAngle);
+    const end=base.clone().add(new THREE.Vector3(Math.cos(angle)*dir*len, Math.sin(angle)*len, 0));
+    const mid=base.clone().add(new THREE.Vector3(Math.cos(angle)*dir*len*0.5, Math.sin(angle)*len*0.5+0.3, rand(len*0.3)));
+    const canePts=[base,mid,end];
+    const caneCurve=new THREE.CatmullRomCurve3(canePts);
+    const caneGeo=new THREE.TubeGeometry(caneCurve,96,0.03,6,false);
+    const cane=new THREE.Mesh(caneGeo,barkMat);
+    cane.geometry.computeBoundingSphere();
+    group.add(cane);
+    // buds
+    const buds=[];
+    const budCount=4+Math.floor(rng()*5*randomness);
+    for(let b=1;b<=budCount;b++){
+      const tBud=b/(budCount+1);
+      const budPos=caneCurve.getPoint(tBud);
+      const bud=new THREE.Mesh(new THREE.SphereGeometry(0.05,8,8), new THREE.MeshStandardMaterial({color:0xA8794D}));
+      bud.position.copy(budPos);
+      group.add(bud);
+      buds.push({mesh:bud,t:tBud});
+    }
+    vine.canes.push({mesh:cane, curve:caneCurve, tMax:1, buds});
+  }
+  // trellis: posts and wires
+  const postMat=metalMat;
+  const wireMat=metalMat;
+  const post1=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,2,8),postMat);
+  post1.position.set(-3,1,0);
+  const post2=post1.clone();
+  post2.position.x=3;
+  group.add(post1); group.add(post2);
+  const wireGeo=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-3,1.5,0),new THREE.Vector3(3,1.5,0)]);
+  const wire=new THREE.Line(wireGeo,new THREE.LineBasicMaterial({color:0x888888}));
+  group.add(wire);
+}
+
+// === Interaction ===
+const raycaster=new THREE.Raycaster();
+const pointer=new THREE.Vector2();
+function onPointerMove(e){
+  if(state.viewMode!=='digital'){hoverMarker.visible=false;return;}
+  const rect=renderer.domElement.getBoundingClientRect();
+  pointer.x=((e.clientX-rect.left)/rect.width)*2-1;
+  pointer.y=-((e.clientY-rect.top)/rect.height)*2+1;
+  raycaster.setFromCamera(pointer,camera);
+  const meshes=[];
+  state.vines.forEach(v=>v.canes.forEach(c=>meshes.push(c.mesh)));
+  const hits=raycaster.intersectObjects(meshes,false);
+  if(hits.length>0){
+    const hit=hits[0];
+    const cane=state.vines.find(v=>v.canes.find(c=>c.mesh===hit.object)).canes.find(c=>c.mesh===hit.object);
+    const localPoint=hit.point.clone();
+    cane.mesh.worldToLocal(localPoint);
+    const t=findNearestT(cane,localPoint);
+    const posLocal=cane.curve.getPoint(t);
+    const posWorld=cane.mesh.localToWorld(posLocal.clone());
+    const tangentLocal=cane.curve.getTangent(t);
+    const tangentWorld=tangentLocal.clone().applyMatrix4(new THREE.Matrix4().extractRotation(cane.mesh.matrixWorld));
+    hoverMarker.position.copy(posWorld);
+    const q=new THREE.Quaternion();
+    q.setFromUnitVectors(new THREE.Vector3(0,0,1),tangentWorld.normalize());
+    hoverMarker.quaternion.copy(q);
+    hoverMarker.visible=true;
+    hoverMarker.userData={cane,t,pos:posWorld};
+  }else{
+    hoverMarker.visible=false;
+  }
+}
+function findNearestT(cane, point){
+  let bestT=0,bestDist=Infinity;
+  const samples=50;
+  for(let i=0;i<=samples;i++){
+    const t=i/samples*cane.tMax;
+    const p=cane.curve.getPoint(t);
+    const d=p.distanceToSquared(point);
+    if(d<bestDist){bestDist=d;bestT=t;}
+  }
+  // refine
+  let a=Math.max(0,bestT-0.05), b=Math.min(cane.tMax,bestT+0.05);
+  for(let i=0;i<10;i++){
+    const t1=a+(b-a)/3, t2=b-(b-a)/3;
+    const d1=cane.curve.getPoint(t1).distanceToSquared(point);
+    const d2=cane.curve.getPoint(t2).distanceToSquared(point);
+    if(d1<d2){b=t2;} else {a=t1;}
+  }
+  return (a+b)/2;
+}
+
+renderer.domElement.addEventListener('pointermove',onPointerMove);
+renderer.domElement.addEventListener('click',()=>{
+  if(state.viewMode!=='digital' || !hoverMarker.visible) return;
+  const {cane,t,pos}=hoverMarker.userData;
+  const marker=new THREE.Mesh(new THREE.SphereGeometry(0.06,8,8), new THREE.MeshBasicMaterial({color:0xff0000}));
+  marker.position.copy(pos);
+  scene.add(marker);
+  state.pendingCuts.push({cane,t,pos,marker});
+  updatePending();
+});
+
+function updatePending(){
+  document.getElementById('pendingBadge').textContent=state.pendingCuts.length;
+}
+
+function undoLast(){
+  const cut=state.pendingCuts.pop();
+  if(cut){scene.remove(cut.marker);} updatePending();
+}
+function clearPending(){state.pendingCuts.forEach(c=>scene.remove(c.marker));state.pendingCuts=[];updatePending();}
+
+function findVineIndex(cane){
+  for(const v of state.vines){
+    if(v.canes.includes(cane)) return v.index;
+  }
+  return {row:0,vine:0};
+}
+
+function parseCutFile(text){
+  try{
+    const arr = JSON.parse(text);
+    if(Array.isArray(arr)) return arr;
+  }catch(e){}
+  const result=[];
+  text.split('\n').forEach(line=>{
+    line=line.trim();
+    if(!line || line.startsWith('#')) return;
+    try{result.push(JSON.parse(line));}catch(err){/* ignore bad lines */}
+  });
+  return result;
+}
+
+async function initCutFile(){
+  if(state.cutFileHandle) return;
+  const opts={
+    suggestedName:'vineCut.txt',
+    startIn:'downloads',
+    types:[{description:'Cut file', accept:{'text/plain':['.txt']}}]
+  };
+  try{
+    [state.cutFileHandle] = await window.showOpenFilePicker(opts);
+    const writable=await state.cutFileHandle.createWritable();
+    await writable.write('');
+    await writable.close();
+  }catch(e){
+    state.cutFileHandle = await window.showSaveFilePicker(opts);
+    try{
+      const writable=await state.cutFileHandle.createWritable();
+      await writable.write('');
+      await writable.close();
+    }catch(err){console.error(err);}
+  }
+}
+
+async function appendCutsToFile(records){
+  try{
+    await initCutFile();
+    const timestamp=new Date().toISOString();
+    const header=`# ${timestamp}\n`;
+    const text=header+records.map(r=>JSON.stringify(r)).join('\n')+'\n';
+    const file=await state.cutFileHandle.getFile();
+    const writable=await state.cutFileHandle.createWritable({keepExistingData:true});
+    await writable.seek(file.size);
+    await writable.write(text);
+    await writable.close();
+  }catch(err){console.error('File access error',err);}
+}
+
+function reapplyDigitalCuts(){
+  state.cutLog.forEach(rec=>{
+    const vine=state.vines.find(v=>v.index.row===rec.row && v.index.vine===rec.vine);
+    if(!vine) return;
+    let best={cane:null,t:0,dist:Infinity};
+    vine.canes.forEach(c=>{
+      const localPoint=c.mesh.worldToLocal(new THREE.Vector3(rec.x,rec.y,rec.z));
+      const t=findNearestT(c,localPoint);
+      const posLocal=c.curve.getPoint(t);
+      const posWorld=c.mesh.localToWorld(posLocal.clone());
+      const d=posWorld.distanceToSquared(new THREE.Vector3(rec.x,rec.y,rec.z));
+      if(d<best.dist){best={cane:c,t,dist:d};}
+    });
+    if(best.cane){
+      applyCut({cane:best.cane,t:best.t,pos:new THREE.Vector3(rec.x,rec.y,rec.z)});
+    }
+  });
+}
+
+async function recordCuts(){
+  if(state.pendingCuts.length===0) return;
+  const records=[];
+  state.pendingCuts.forEach(cut=>{
+    const idx=findVineIndex(cut.cane);
+    const rec={row:idx.row, vine:idx.vine, x:cut.pos.x, y:cut.pos.y, z:cut.pos.z};
+    records.push(rec);
+    applyCut(cut);
+    saveCut(cut);
+    scene.remove(cut.marker);
+  });
+  state.pendingCuts=[];
+  updatePending();
+  state.cutLog.push(...records);
+  await appendCutsToFile(records);
+}
+
+  function loadCuts(data){
+    clearPending();
+    data.forEach(rec=>{
+      const vine=state.vines.find(v=>v.index.row===rec.row && v.index.vine===rec.vine);
+    if(!vine) return;
+    let best={cane:null,t:0,dist:Infinity,pos:null};
+    vine.canes.forEach(c=>{
+      const localPoint=c.mesh.worldToLocal(new THREE.Vector3(rec.x,rec.y,rec.z));
+      const t=findNearestT(c,localPoint);
+      const posLocal=c.curve.getPoint(t);
+      const posWorld=c.mesh.localToWorld(posLocal.clone());
+      const d=posWorld.distanceToSquared(new THREE.Vector3(rec.x,rec.y,rec.z));
+      if(d<best.dist){best={cane:c,t,pos:posWorld,dist:d};}
+    });
+    if(best.cane){
+      const marker=new THREE.Mesh(new THREE.SphereGeometry(0.06,8,8), new THREE.MeshBasicMaterial({color:0xff0000}));
+      marker.position.copy(best.pos);
+      scene.add(marker);
+      state.pendingCuts.push({cane:best.cane,t:best.t,pos:best.pos,marker});
+    }
+  });
+    updatePending();
+  }
+
+  async function loadCutFile(){
+    try{
+      const [handle]=await window.showOpenFilePicker({
+        types:[{description:'Cut file', accept:{'text/plain':['.txt','.json']}}]
+      });
+      state.cutPlaybackHandle=handle;
+      const file=await handle.getFile();
+      const text=await file.text();
+      const data=parseCutFile(text);
+      loadCuts(data);
+      const loadBtn=document.getElementById('loadCuts');
+      loadBtn.style.backgroundColor='lightgreen';
+      document.getElementById('loadStatus').textContent=`Loaded ${data.length} cuts`;
+    }catch(err){console.error(err);}
+  }
+
+  async function clearPlaybackFile(){
+    if(!state.cutPlaybackHandle) return;
+    try{
+      const writable=await state.cutPlaybackHandle.createWritable();
+      await writable.write('');
+      await writable.close();
+    }catch(err){console.error(err);}
+    state.cutPlaybackHandle=null;
+  }
+
+// Execute cuts with platform and arm
+function executeCuts(onComplete){
+  if(state.pendingCuts.length===0){
+    if(onComplete) onComplete();
+    return;
+  }
+  robot.visible=true;
+  let i=0; let phase='move'; let cut; let lastTime=null;
+  const speed=4; // platform speed
+  Object.assign(armAngles,restAngles); applyAngles();
+  robot.position.set(state.pendingCuts[0].pos.x,0,state.pendingCuts[0].pos.z);
+  let targetAngles=Object.assign({},restAngles);
+  function step(time){
+    if(!lastTime) lastTime=time; const dt=(time-lastTime)/1000; lastTime=time;
+    if(i>=state.pendingCuts.length){
+      robot.visible=true;
+      clearPending();
+      renderer.setAnimationLoop(renderLoop);
+      clearPlaybackFile();
+      if(onComplete) onComplete();
+      return;
+    }
+    cut=state.pendingCuts[i];
+    if(phase==='move'){
+      const targetBase=new THREE.Vector3(cut.pos.x,0,cut.pos.z);
+      const dir=targetBase.clone().sub(robot.position);
+      const dist=dir.length();
+      if(dist<0.05){
+        const local=robot.worldToLocal(cut.pos.clone());
+        targetAngles=solveIK(local);
+        phase='extend';
+      }else{
+        robot.position.add(dir.normalize().multiplyScalar(speed*dt));
+      }
+    }else if(phase==='extend'){
+      moveAnglesTowards(targetAngles,dt);
+      if(anglesClose(armAngles,targetAngles)) phase='cut';
+    }else if(phase==='cut'){
+      applyCut(cut);
+      saveCut(cut);
+      const idx=findVineIndex(cut.cane);
+      state.cutLog.push({row:idx.row, vine:idx.vine, x:cut.pos.x, y:cut.pos.y, z:cut.pos.z});
+      phase='retract';
+    }else if(phase==='retract'){
+      moveAnglesTowards(restAngles,dt);
+      if(anglesClose(armAngles,restAngles)){i++; phase='move';}
+    }
+    renderer.render(scene,camera);
+  }
+  renderer.setAnimationLoop(step);
+}
+
+function applyCut(cut){
+  const cane=cut.cane;
+  const pts=[]; const segs=20;
+  for(let i=0;i<=segs;i++){
+    const tt=cut.t*i/segs;
+    pts.push(cane.curve.getPoint(tt));
+  }
+  cane.curve=new THREE.CatmullRomCurve3(pts);
+  const geo=new THREE.TubeGeometry(cane.curve,96,0.03,6,false);
+  cut.cane.mesh.geometry.dispose();
+  cut.cane.mesh.geometry=geo;
+  geo.computeBoundingSphere();
+  cane.buds.forEach(b=>{b.mesh.visible=b.t<=cut.t;});
+  cane.tMax=1;
+}
+function saveCut(cut){
+  const pos=cut.pos.clone().sub(cut.cane.mesh.parent.position);
+  state.storedCuts.push(pos.toArray());
+  localStorage.setItem('vine_pruning_cuts_3d_v2_curves_with_buds',JSON.stringify(state.storedCuts));
+  document.getElementById('learningStats').textContent=`Learning stats: ${state.storedCuts.length} cuts`;
+}
+
+// Recommended zones
+const recGroup=new THREE.Group();
+scene.add(recGroup);
+function updateRecommendations(){
+  recGroup.clear();
+  if(state.storedCuts.length<20) return;
+  const vine=getSelectedVine();
+  const counts={};
+  const cell=0.5; // grid size
+  state.storedCuts.forEach(a=>{
+    const p=new THREE.Vector3().fromArray(a);
+    const x=Math.round(p.x/cell), z=Math.round(p.z/cell);
+    const key=x+','+z; counts[key]=(counts[key]||0)+1;
+  });
+  Object.entries(counts).forEach(([k,c])=>{
+    const [x,z]=k.split(',').map(Number);
+    const ring=new THREE.Mesh(new THREE.RingGeometry(0.2,0.25,16), new THREE.MeshBasicMaterial({color:0xff0000, transparent:true, opacity:0.5, side:THREE.DoubleSide}));
+    ring.position.set(x*cell+vine.group.position.x,1.5,z*cell+vine.group.position.z);
+    ring.rotation.x=-Math.PI/2;
+    recGroup.add(ring);
+  });
+}
+
+// Camera orbit controls
+let isDragging=false, prevX=0,prevY=0;
+renderer.domElement.addEventListener('mousedown',e=>{isDragging=true;prevX=e.clientX;prevY=e.clientY;});
+window.addEventListener('mouseup',()=>isDragging=false);
+window.addEventListener('mousemove',e=>{
+  if(!isDragging) return;
+  const dx=(e.clientX-prevX)/window.innerWidth;
+  const dy=(e.clientY-prevY)/window.innerHeight;
+  theta-=dx*3; phi-=dy*3; phi=Math.max(0.1,Math.min(Math.PI-0.1,phi));
+  prevX=e.clientX; prevY=e.clientY; updateCamera();
+});
+renderer.domElement.addEventListener('wheel',e=>{radius*=1+e.deltaY*0.001;radius=Math.max(3,Math.min(40,radius));document.getElementById('zoom').value=radius;updateCamera();});
+
+// keyboard
+window.addEventListener('keydown',e=>{
+  const key=e.key;
+  if(key==='Enter'){state.viewMode==='real'?executeCuts():recordCuts();}
+  if(key==='Backspace' && state.viewMode==='digital'){undoLast();}
+  if(key.toLowerCase()==='r' && state.viewMode==='digital'){clearPending();}
+  const step=0.5;
+  switch(key){
+    case 'ArrowUp': state.platform.z-=step; updatePlatform(); break;
+    case 'ArrowDown': state.platform.z+=step; updatePlatform(); break;
+    case 'ArrowLeft': state.platform.x-=step; updatePlatform(); break;
+    case 'ArrowRight': state.platform.x+=step; updatePlatform(); break;
+    case 'q': case 'Q': armAngles.base+=0.1; applyAngles(); break;
+    case 'a': case 'A': armAngles.base-=0.1; applyAngles(); break;
+    case 'w': case 'W': armAngles.shoulder+=0.1; applyAngles(); break;
+    case 's': case 'S': armAngles.shoulder-=0.1; applyAngles(); break;
+    case 'e': case 'E': armAngles.elbow+=0.1; applyAngles(); break;
+    case 'd': case 'D': armAngles.elbow-=0.1; applyAngles(); break;
+    case 'r': case 'R': if(state.viewMode!=='digital'){armAngles.wrist+=0.1; applyAngles();} break;
+    case 'f': case 'F': armAngles.wrist-=0.1; applyAngles(); break;
+  }
+});
+
+document.getElementById('moveForward').addEventListener('click',()=>{state.platform.z-=0.5;updatePlatform();});
+document.getElementById('moveBackward').addEventListener('click',()=>{state.platform.z+=0.5;updatePlatform();});
+document.getElementById('moveLeft').addEventListener('click',()=>{state.platform.x-=0.5;updatePlatform();});
+document.getElementById('moveRight').addEventListener('click',()=>{state.platform.x+=0.5;updatePlatform();});
+document.getElementById('basePlus').addEventListener('click',()=>{armAngles.base+=0.1;applyAngles();});
+document.getElementById('baseMinus').addEventListener('click',()=>{armAngles.base-=0.1;applyAngles();});
+document.getElementById('shoulderPlus').addEventListener('click',()=>{armAngles.shoulder+=0.1;applyAngles();});
+document.getElementById('shoulderMinus').addEventListener('click',()=>{armAngles.shoulder-=0.1;applyAngles();});
+document.getElementById('elbowPlus').addEventListener('click',()=>{armAngles.elbow+=0.1;applyAngles();});
+document.getElementById('elbowMinus').addEventListener('click',()=>{armAngles.elbow-=0.1;applyAngles();});
+document.getElementById('wristPlus').addEventListener('click',()=>{armAngles.wrist+=0.1;applyAngles();});
+document.getElementById('wristMinus').addEventListener('click',()=>{armAngles.wrist-=0.1;applyAngles();});
+
+// selection & double click
+renderer.domElement.addEventListener('dblclick',e=>{
+  raycaster.setFromCamera(pointer,camera);
+  const groups=state.vines.map(v=>v.group);
+  const hits=raycaster.intersectObjects(groups,true);
+  if(hits.length>0){
+    let obj=hits[0].object;
+    while(obj && !groups.includes(obj)){obj=obj.parent;}
+    const vine=state.vines.find(v=>v.group===obj);
+    if(vine){
+      state.selected=vine.index;
+      document.getElementById('selRow').value=vine.index.row;
+      document.getElementById('selVine').value=vine.index.vine;
+      centerSelected();
+    }
+  }
+});
+
+function getSelectedVine(){
+  return state.vines.find(v=>v.index.row==state.selected.row && v.index.vine==state.selected.vine);
+}
+function centerSelected(){
+  const vine=getSelectedVine();
+  if(vine){target.copy(vine.group.position.clone().add(vine.cordonCenter));updateCamera();updateRecommendations();}
+}
+
+// === UI events ===
+document.getElementById('themeToggle').onclick=()=>{
+  const b=document.body;b.dataset.theme=b.dataset.theme==='dark'?'light':'dark';themeUpdate();renderer.render(scene,camera);
+};
+document.getElementById('applyLayout').onclick=()=>{
+  state.rows=+document.getElementById('rows').value;
+  state.vinesPerRow=+document.getElementById('vinesPerRow').value;
+  state.randomSeed=Math.floor(Math.random()*1e9);
+  buildVineyard();
+  centerSelected();
+  state.cutFileHandle=null;
+  state.cutPlaybackHandle=null;
+  state.cutLog=[];
+  clearPending();
+};
+document.getElementById('centerSelect').onclick=()=>{state.selected.row=+document.getElementById('selRow').value;state.selected.vine=+document.getElementById('selVine').value;centerSelected();};
+document.getElementById('zoom').oninput=e=>{radius=+e.target.value;updateCamera();};
+document.getElementById('similarity').oninput=e=>{
+  state.similarity=+e.target.value;
+  if(state.viewMode==='real'){buildVineyard();centerSelected();}
+};
+document.getElementById('caneAngle').oninput=e=>{
+  state.caneAngle=+e.target.value;
+  if(state.viewMode==='real'){buildVineyard();centerSelected();}
+};
+document.getElementById('recordCuts').onclick=recordCuts;
+document.getElementById('loadCuts').onclick=loadCutFile;
+document.getElementById('replayCuts').onclick=async ()=>{
+  if(state.pendingCuts.length===0){
+    if(state.cutPlaybackHandle){
+      const file=await state.cutPlaybackHandle.getFile();
+      const text=await file.text();
+      loadCuts(parseCutFile(text));
+    }else{
+      await loadCutFile();
+    }
+  }
+  const count=state.pendingCuts.length;
+  if(count===0) return;
+  const loadBtn=document.getElementById('loadCuts');
+  loadBtn.style.backgroundColor='yellow';
+  document.getElementById('loadStatus').textContent=`Loaded ${count} cuts`;
+  executeCuts(()=>{loadBtn.style.backgroundColor='';});
+};
+document.getElementById('undoCut').onclick=undoLast;
+document.getElementById('clearCuts').onclick=clearPending;
+document.getElementById('resetLearned').onclick=()=>{localStorage.removeItem('vine_pruning_cuts_3d_v2_curves_with_buds');state.storedCuts=[];document.getElementById('learningStats').textContent='Learning stats';updateRecommendations();};
+document.querySelectorAll('input[name=viewMode]').forEach(r=>r.addEventListener('change',e=>setViewMode(e.target.value)));
+
+// Initial
+buildVineyard();
+setViewMode('real');
+updatePending();
+
+// render loop
+function renderLoop(time){
+  renderer.render(scene,camera);
+}
+renderer.setAnimationLoop(renderLoop);
+
+window.addEventListener('resize',()=>{
+  renderer.setSize(window.innerWidth-260, window.innerHeight);
+  camera.aspect=(window.innerWidth-260)/window.innerHeight;camera.updateProjectionMatrix();
+});
+
+</script>
+</body>
+</html>
