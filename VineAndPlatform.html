@@ -62,6 +62,9 @@
     <label>Vines/Row <input type="number" id="vinesPerRow" value="1" min="1" max="12"></label>
     <button id="applyLayout">Apply Layout</button>
   </div>
+  <div id="railControls">
+    <button id="toggleRailHeight">Toggle Rail Height</button>
+  </div>
   <div>
     <label>Selected row <input type="number" id="selRow" value="0" min="0"></label>
     <label>Selected vine <input type="number" id="selVine" value="0" min="0"></label>
@@ -127,11 +130,14 @@
 <script type="module">
 import * as THREE from 'https://unpkg.com/three@0.161.0/build/three.module.js';
 
-// Height for the platform's travel wire
-const WIRE1_Z = 1.8;
+// Heights for the platform's rails
+const BASE_WIRE1_Z = 1.8;
+const BASE_OVERHEAD_Z = 3.0;
+let railHeightScale = 2;
+let WIRE1_Z = BASE_WIRE1_Z * railHeightScale;
 const ROW_SPACING = 5;
 const VINE_SPACING = 4;
-const OVERHEAD_Z = 3.0;
+let OVERHEAD_Z = BASE_OVERHEAD_Z * railHeightScale;
 const HEADLAND_X = -2;
 
 let transferY = WIRE1_Z + 0.05;
@@ -414,6 +420,15 @@ function buildRails(){
     const rowGeo=new THREE.TubeGeometry(rowPath,1,0.02,8,false);
     railsGroup.add(new THREE.Mesh(rowGeo,new THREE.MeshStandardMaterial({color:0x888888})));
   }
+}
+
+function updateRailHeights(scale){
+  WIRE1_Z = BASE_WIRE1_Z * scale;
+  OVERHEAD_Z = BASE_OVERHEAD_Z * scale;
+  transferY = WIRE1_Z + 0.05;
+  if(railsGroup){scene.remove(railsGroup); railsGroup=null;}
+  buildRails();
+  updatePlatform();
 }
 
 function buildVine(group,vine,rng){
@@ -977,6 +992,10 @@ document.getElementById('applyLayout').onclick=()=>{
   state.cutPlaybackHandle=null;
   state.cutLog=[];
   clearPending();
+};
+document.getElementById('toggleRailHeight').onclick=()=>{
+  railHeightScale = railHeightScale === 1 ? 2 : 1;
+  updateRailHeights(railHeightScale);
 };
 document.getElementById('centerSelect').onclick=()=>{state.selected.row=+document.getElementById('selRow').value;state.selected.vine=+document.getElementById('selVine').value;centerSelected();};
 document.getElementById('zoom').oninput=e=>{radius=+e.target.value;updateCamera();};
