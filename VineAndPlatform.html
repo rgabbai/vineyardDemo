@@ -22,9 +22,22 @@
     color: var(--text);
     font-family: sans-serif;
     display: flex;
+    flex-direction: column;
     height: 100vh;
     overflow: hidden;
-    position: relative;
+  }
+  #topControls {
+    background: var(--panel-bg);
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    box-sizing: border-box;
+  }
+  #main {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
   }
   #controls {
     width: 260px;
@@ -34,6 +47,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    overflow-y: auto;
   }
   #stage { flex: 1; }
   label { display: block; margin-top: 4px; }
@@ -51,12 +65,23 @@
 </style>
 </head>
 <body data-theme="dark">
-<div id="controls">
-  <div>
-    <label><input type="radio" name="viewMode" value="real" checked> Real Vineyard</label>
-    <label><input type="radio" name="viewMode" value="digital"> Vineyard Digital Twin</label>
+  <div id="topControls">
+    <div>
+      <label><input type="radio" name="viewMode" value="real" checked> Real Vineyard</label>
+      <label><input type="radio" name="viewMode" value="digital"> Vineyard Digital Twin</label>
+    </div>
+    <div>
+      <label>Selected row <input type="number" id="selRow" value="0" min="0"></label>
+      <label>Selected vine <input type="number" id="selVine" value="0" min="0"></label>
+      <button id="centerSelect">Center & Select</button>
+    </div>
+    <div>
+      <label>Zoom <input type="range" id="zoom" min="3" max="25" value="12"></label>
+    </div>
+    <button id="themeToggle">Toggle Theme</button>
   </div>
-  <button id="themeToggle">Toggle Theme</button>
+<div id="main">
+<div id="controls">
   <div id="layoutControls">
     <label>Rows <input type="number" id="rows" value="1" min="1" max="10"></label>
     <label>Vines/Row <input type="number" id="vinesPerRow" value="1" min="1" max="12"></label>
@@ -65,15 +90,7 @@
   <div id="railControls">
     <button id="toggleRailHeight">Toggle Rail Height</button>
   </div>
-  <div>
-    <label>Selected row <input type="number" id="selRow" value="0" min="0"></label>
-    <label>Selected vine <input type="number" id="selVine" value="0" min="0"></label>
-    <button id="centerSelect">Center & Select</button>
-  </div>
-  <div>
-    <label>Zoom <input type="range" id="zoom" min="3" max="25" value="12"></label>
-  </div>
-  <div id="realControls" style="display:none">
+    <div id="realControls" style="display:none">
     <label>Similarity <input type="range" id="similarity" min="0" max="1" step="0.1" value="0.5"></label>
     <label>Cane Angle <input type="range" id="caneAngle" min="0" max="90" value="45"></label>
     <button id="loadCuts">Load Cuts File</button>
@@ -127,6 +144,7 @@
   <div id="learningStats">Learning stats</div>
 </div>
 <div id="stage"></div>
+</div>
 <script type="module">
 import * as THREE from 'https://unpkg.com/three@0.161.0/build/three.module.js';
 
@@ -181,11 +199,12 @@ function mulberry32(a){
 // === Scene Setup ===
 const renderer = new THREE.WebGLRenderer({antialias:true});
 renderer.setPixelRatio(window.devicePixelRatio);
-renderer.setSize(window.innerWidth-260, window.innerHeight);
+const topHeight=document.getElementById('topControls').offsetHeight;
+renderer.setSize(window.innerWidth-260, window.innerHeight-topHeight);
 document.getElementById('stage').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(50, (window.innerWidth-260)/window.innerHeight, 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(50, (window.innerWidth-260)/(window.innerHeight-topHeight), 0.1, 1000);
 let theta=0.5, phi=1.0, radius=12, target=new THREE.Vector3();
 
 // Lights
@@ -831,7 +850,7 @@ window.addEventListener('mouseup',()=>isDragging=false);
 window.addEventListener('mousemove',e=>{
   if(!isDragging) return;
   const dx=(e.clientX-prevX)/window.innerWidth;
-  const dy=(e.clientY-prevY)/window.innerHeight;
+  const dy=(e.clientY-prevY)/(window.innerHeight-document.getElementById('topControls').offsetHeight);
   theta-=dx*3; phi-=dy*3; phi=Math.max(0.1,Math.min(Math.PI-0.1,phi));
   prevX=e.clientX; prevY=e.clientY; updateCamera();
 });
@@ -1050,8 +1069,10 @@ function renderLoop(time){
 renderer.setAnimationLoop(renderLoop);
 
 window.addEventListener('resize',()=>{
-  renderer.setSize(window.innerWidth-260, window.innerHeight);
-  camera.aspect=(window.innerWidth-260)/window.innerHeight;camera.updateProjectionMatrix();
+  const topHeight=document.getElementById('topControls').offsetHeight;
+  renderer.setSize(window.innerWidth-260, window.innerHeight-topHeight);
+  camera.aspect=(window.innerWidth-260)/(window.innerHeight-topHeight);
+  camera.updateProjectionMatrix();
 });
 
 </script>
