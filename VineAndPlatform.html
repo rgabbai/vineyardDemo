@@ -102,7 +102,7 @@
 <div id="controls">
   <div id="railControls">
     <button id="toggleRailHeight">Toggle Rail Height</button>
-    <label>Rail Height <input type="range" id="railHeight" min="1" max="2" step="0.1" value="2"></label>
+    <label>Rail Height <input type="range" id="railHeight" min="1" max="4" step="0.1" value="2"></label>
   </div>
     <div id="realControls" style="display:none">
     <label>Similarity <input type="range" id="similarity" min="0" max="1" step="0.1" value="0.5"></label>
@@ -332,6 +332,18 @@ function solveIK(p){
   const shoulderAng=Math.atan2(py,px) - Math.atan2(L2*Math.sin(elbowAng), L1+L2*Math.cos(elbowAng));
   const wristAng=Math.atan2(py,px) - shoulderAng - elbowAng;
   return {base:base, shoulder:shoulderAng, elbow:elbowAng, wrist:wristAng};
+}
+
+function forwardKinematics(a){
+  const base=a.base, s=a.shoulder, e=a.elbow, w=a.wrist;
+  const dir=new THREE.Vector3(Math.sin(base),0,Math.cos(base));
+  const r1=L1*Math.sin(s);
+  const y1=armBaseHeight+L1*Math.cos(s);
+  const r2=r1+L2*Math.sin(s+e);
+  const y2=y1+L2*Math.cos(s+e);
+  const r3=r2+L3*Math.sin(s+e+w);
+  const y3=y2+L3*Math.cos(s+e+w);
+  return new THREE.Vector3(dir.x*r3, y3, dir.z*r3);
 }
 
 function moveAnglesTowards(target, dt){
@@ -784,7 +796,9 @@ function executeCuts(onComplete){
     if(Math.abs(currZ-targetZ)>0.01){
       if(Math.abs(currX)>0.01) actions.push({type:'move',x:0,z:currZ});
       actions.push({type:'move',x:HEADLAND_X,z:currZ});
-      actions.push({type:'move',x:HEADLAND_X,z:targetZ});
+      actions.push({type:'move',x:HEADLAND_X,y:OVERHEAD_Z,z:currZ});
+      actions.push({type:'move',x:HEADLAND_X,y:OVERHEAD_Z,z:targetZ});
+      actions.push({type:'move',x:HEADLAND_X,y:WIRE1_Z+0.05,z:targetZ});
       actions.push({type:'move',x:0,z:targetZ});
       currX=0; currZ=targetZ;
     }
@@ -796,6 +810,8 @@ function executeCuts(onComplete){
   let currentCut=null;
   let cutPhase='extend';
   let targetAngles=Object.assign({},restAngles);
+  let targetLocal=null;
+  let cutReachable=false;
   let lastTime=null;
   const speed=4; // platform speed
   function step(time){
@@ -810,24 +826,31 @@ function executeCuts(onComplete){
     }
     const action=actions[actionIndex];
     if(action.type==='move'){
-      const targetBase=new THREE.Vector3(action.x,transferY,action.z);
+      const targetY=('y' in action)?action.y:transferY;
+      const targetBase=new THREE.Vector3(action.x,targetY,action.z);
       const dir=targetBase.clone().sub(robot.position);
       const dist=dir.length();
       if(dist<0.05){
+        if('y' in action) transferY=targetY;
         actionIndex++;
       }else{
-        robot.position.add(dir.normalize().multiplyScalar(speed*dt));
+        const stepVec=dir.normalize().multiplyScalar(speed*dt);
+        if(stepVec.length()>dist) robot.position.copy(targetBase);
+        else robot.position.add(stepVec);
       }
     }else if(action.type==='cut'){
       if(!currentCut){
         currentCut=action.cut;
-        const local=robot.worldToLocal(currentCut.pos.clone());
-        targetAngles=solveIK(local);
+        targetLocal=robot.worldToLocal(currentCut.pos.clone());
+        targetAngles=solveIK(targetLocal);
+        cutReachable=forwardKinematics(targetAngles).distanceTo(targetLocal)<0.05;
         cutPhase='extend';
       }
       if(cutPhase==='extend'){
         moveAnglesTowards(targetAngles,dt);
-        if(anglesClose(armAngles,targetAngles)) cutPhase='cut';
+        const tip=forwardKinematics(armAngles);
+        const reached=tip.distanceTo(targetLocal)<0.05;
+        if((cutReachable && reached) || (!cutReachable && anglesClose(armAngles,targetAngles))) cutPhase='cut';
       }else if(cutPhase==='cut'){
         applyCut(currentCut);
         saveCut(currentCut);
