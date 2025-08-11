@@ -34,6 +34,18 @@
     gap: 12px;
     box-sizing: border-box;
   }
+  #layoutControls {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #layoutControls label {
+    display: flex;
+    align-items: center;
+    margin: 0;
+  }
+  #layoutControls button { margin-top: 0; }
   #main {
     flex: 1;
     display: flex;
@@ -79,14 +91,14 @@
       <label>Zoom <input type="range" id="zoom" min="3" max="25" value="12"></label>
     </div>
     <button id="themeToggle">Toggle Theme</button>
+    <div id="layoutControls">
+      <label>Rows <input type="number" id="rows" value="1" min="1" max="10"></label>
+      <label>Vines/Row <input type="number" id="vinesPerRow" value="1" min="1" max="12"></label>
+      <button id="applyLayout">Apply Layout</button>
+    </div>
   </div>
 <div id="main">
 <div id="controls">
-  <div id="layoutControls">
-    <label>Rows <input type="number" id="rows" value="1" min="1" max="10"></label>
-    <label>Vines/Row <input type="number" id="vinesPerRow" value="1" min="1" max="12"></label>
-    <button id="applyLayout">Apply Layout</button>
-  </div>
   <div id="railControls">
     <button id="toggleRailHeight">Toggle Rail Height</button>
   </div>
