@@ -110,6 +110,13 @@
     <div><button id="elbowPlus">Elbow+</button><button id="elbowMinus">Elbow-</button></div>
     <div><button id="wristPlus">Wrist+</button><button id="wristMinus">Wrist-</button></div>
   </div>
+  <div id="autoControls">
+    <div>Auto Traverse</div>
+    <label>From Row <input type="number" id="startRow" value="0" min="0"></label>
+    <label>To Row <input type="number" id="endRow" value="0" min="0"></label>
+    <label>Length <input type="number" id="rowLength" value="10" min="0"></label>
+    <button id="startAuto">Start</button>
+  </div>
   <div>
     <button id="resetLearned">Reset Learned Data</button>
   </div>
@@ -122,6 +129,18 @@ import * as THREE from 'https://unpkg.com/three@0.161.0/build/three.module.js';
 
 // Height for the platform's travel wire
 const WIRE1_Z = 1.8;
+const ROW_SPACING = 5;
+const VINE_SPACING = 4;
+const OVERHEAD_Z = 3.0;
+const HEADLAND_X = -2;
+
+let transferY = WIRE1_Z + 0.05;
+let program = null;
+let autoTransfer = null;
+let currentRow = 0;
+const carriageSpeed = 1;
+const transferSpeed = 0.5;
+let railsGroup = null;
 
 // === Config ===
 const state = {
@@ -255,7 +274,7 @@ function applyAngles(){
 applyAngles();
 
 function updatePlatform(){
-  robot.position.set(state.platform.x, WIRE1_Z+0.05, state.platform.z);
+  robot.position.set(state.platform.x, transferY, state.platform.z);
 }
 updatePlatform();
 
@@ -342,16 +361,16 @@ function updateVineColors(){
 function clearVineyard(){
   state.vines.forEach(v=>scene.remove(v.group));
   state.vines=[];
+  if(railsGroup){scene.remove(railsGroup); railsGroup=null;}
 }
 
 function buildVineyard(){
   clearVineyard();
   const rng=mulberry32(state.randomSeed);
-  const rowSpacing=5, vineSpacing=4;
   for(let r=0;r<state.rows;r++){
     for(let i=0;i<state.vinesPerRow;i++){
       const g=new THREE.Group();
-      g.position.set(i*vineSpacing,0,r*rowSpacing);
+      g.position.set(i*VINE_SPACING,0,r*ROW_SPACING);
       scene.add(g);
       const vine={group:g, canes:[], cordonCenter:new THREE.Vector3(), index:{row:r,vine:i}};
       buildVine(g,vine,rng);
@@ -360,6 +379,40 @@ function buildVineyard(){
   }
   if(state.cutLog.length>0 && state.viewMode==='digital'){
     reapplyDigitalCuts();
+  }
+  buildRails();
+  const sr=document.getElementById('startRow');
+  const er=document.getElementById('endRow');
+  if(sr) sr.max=state.rows-1;
+  if(er) er.max=state.rows-1;
+}
+
+function buildRails(){
+  const rowLen=(state.vinesPerRow-1)*VINE_SPACING;
+  railsGroup=new THREE.Group();
+  scene.add(railsGroup);
+  const overPath=new THREE.LineCurve3(
+    new THREE.Vector3(HEADLAND_X,OVERHEAD_Z,0),
+    new THREE.Vector3(HEADLAND_X,OVERHEAD_Z,(state.rows-1)*ROW_SPACING));
+  const overGeo=new THREE.TubeGeometry(overPath,1,0.02,8,false);
+  railsGroup.add(new THREE.Mesh(overGeo,new THREE.MeshStandardMaterial({color:0xaaaaaa})));
+  for(let r=0;r<state.rows;r++){
+    const y=r*ROW_SPACING;
+    const vPath=new THREE.LineCurve3(
+      new THREE.Vector3(HEADLAND_X,OVERHEAD_Z,y),
+      new THREE.Vector3(HEADLAND_X,WIRE1_Z,y));
+    const vGeo=new THREE.TubeGeometry(vPath,1,0.01,8,false);
+    railsGroup.add(new THREE.Mesh(vGeo,new THREE.MeshStandardMaterial({color:0xaaaaaa})));
+    const cPath=new THREE.LineCurve3(
+      new THREE.Vector3(HEADLAND_X,WIRE1_Z,y),
+      new THREE.Vector3(0,WIRE1_Z,y));
+    const cGeo=new THREE.TubeGeometry(cPath,1,0.01,8,false);
+    railsGroup.add(new THREE.Mesh(cGeo,new THREE.MeshStandardMaterial({color:0xaaaaaa})));
+    const rowPath=new THREE.LineCurve3(
+      new THREE.Vector3(0,WIRE1_Z,y),
+      new THREE.Vector3(rowLen,WIRE1_Z,y));
+    const rowGeo=new THREE.TubeGeometry(rowPath,1,0.02,8,false);
+    railsGroup.add(new THREE.Mesh(rowGeo,new THREE.MeshStandardMaterial({color:0x888888})));
   }
 }
 
@@ -816,6 +869,74 @@ document.getElementById('btnWork').addEventListener('click',()=>setPlatformMode(
 document.getElementById('btnDock').addEventListener('click',()=>setPlatformMode('Dock'));
 document.getElementById('btnEstop').addEventListener('click',()=>{platformState.estop=!platformState.estop;console.log('E-stop',platformState.estop);});
 
+document.getElementById('startAuto').addEventListener('click',startProgram);
+
+function startProgram(){
+  const sr=+document.getElementById('startRow').value;
+  const er=+document.getElementById('endRow').value;
+  const L=+document.getElementById('rowLength').value;
+  if(sr<0||er<sr||sr>=state.rows||er>=state.rows) return;
+  program={startRow:sr,endRow:er,length:L};
+  currentRow=sr;
+  state.platform.x=HEADLAND_X;
+  state.platform.z=0;
+  transferY=WIRE1_Z+0.05;
+  updatePlatform();
+  startAutoTransfer(sr,'Program');
+}
+
+function startAutoTransfer(row,next='Traverse'){
+  autoTransfer={targetRow:row,phase:(state.platform.x===HEADLAND_X?'up':'toHeadland'),next};
+}
+
+function updateAutoTransfer(dt){
+  if(!autoTransfer) return;
+  if(autoTransfer.phase==='toHeadland'){
+    const dir=HEADLAND_X-state.platform.x;
+    const step=Math.sign(dir)*carriageSpeed*dt;
+    if(Math.abs(dir)<=Math.abs(step)){state.platform.x=HEADLAND_X;autoTransfer.phase='up';}
+    else state.platform.x+=step;
+    updatePlatform();
+  }else if(autoTransfer.phase==='up'){
+    transferY=Math.min(OVERHEAD_Z,transferY+transferSpeed*dt);
+    updatePlatform();
+    if(transferY>=OVERHEAD_Z) autoTransfer.phase='across';
+  }else if(autoTransfer.phase==='across'){
+    const targetZ=autoTransfer.targetRow*ROW_SPACING;
+    const dir=targetZ-state.platform.z;
+    const step=Math.sign(dir)*carriageSpeed*dt;
+    if(Math.abs(dir)<=Math.abs(step)){state.platform.z=targetZ;autoTransfer.phase='down';}
+    else state.platform.z+=step;
+    updatePlatform();
+  }else if(autoTransfer.phase==='down'){
+    transferY=Math.max(WIRE1_Z+0.05,transferY-transferSpeed*dt);
+    updatePlatform();
+    if(transferY<=WIRE1_Z+0.05){
+      const next=autoTransfer.next;
+      currentRow=autoTransfer.targetRow;
+      autoTransfer=null;
+      if(next==='Program' || next==='Traverse'){
+        state.platform.x=0;
+        updatePlatform();
+      }
+    }
+  }
+}
+
+function updateProgram(dt){
+  if(!program) return;
+  state.platform.x=Math.min(program.length,state.platform.x+carriageSpeed*dt);
+  updatePlatform();
+  if(state.platform.x>=program.length){
+    if(currentRow>=program.endRow){
+      program=null;
+      startAutoTransfer(0,'Traverse');
+    }else{
+      startAutoTransfer(currentRow+1,'Program');
+    }
+  }
+}
+
 // selection & double click
 renderer.domElement.addEventListener('dblclick',e=>{
   raycaster.setFromCamera(pointer,camera);
@@ -897,7 +1018,14 @@ setViewMode('real');
 updatePending();
 
 // render loop
+let lastTime=0;
 function renderLoop(time){
+  const dt=(time-lastTime)/1000; lastTime=time;
+  if(autoTransfer){
+    updateAutoTransfer(dt);
+  }else if(program){
+    updateProgram(dt);
+  }
   renderer.render(scene,camera);
 }
 renderer.setAnimationLoop(renderLoop);
