@@ -850,7 +850,8 @@ function executeCuts(onComplete){
         moveAnglesTowards(targetAngles,dt);
         const tip=forwardKinematics(armAngles);
         const reached=tip.distanceTo(targetLocal)<0.05;
-        if((cutReachable && reached) || (!cutReachable && anglesClose(armAngles,targetAngles))) cutPhase='cut';
+        // In the real vineyard view, require the cutter to actually reach the target
+        if(reached || (state.viewMode !== 'real' && !cutReachable && anglesClose(armAngles,targetAngles))) cutPhase='cut';
       }else if(cutPhase==='cut'){
         applyCut(currentCut);
         saveCut(currentCut);
